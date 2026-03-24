@@ -1,0 +1,77 @@
+.wppk-card {
+  max-width: 640px;
+  margin: 24px auto;
+  padding: 28px;
+  border: 1px solid #d6e4f2;
+  border-radius: 28px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: 0 16px 40px rgba(27, 45, 74, 0.08);
+}
+
+.wppk-card__eyebrow {
+  margin-bottom: 10px;
+  color: #5b6b80;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.wppk-card__title {
+  margin: 0 0 8px;
+  color: #0f172a;
+  font-size: 32px;
+  line-height: 1.05;
+}
+
+.wppk-card__copy {
+  margin: 0 0 18px;
+  color: #475569;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.wppk-card__notice {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #e8f1ff;
+  color: #215bb4;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.wppk-form {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.wppk-form__input {
+  flex: 1 1 280px;
+  min-height: 52px;
+  padding: 0 16px;
+  border: 1px solid #cddbec;
+  border-radius: 16px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 15px;
+}
+
+.wppk-form__button {
+  min-height: 52px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 16px;
+  background: #2f80ed;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.wppk-form__button:hover,
+.wppk-form__button:focus {
+  background: #1f6fd8;
+}
+
