@@ -11,6 +11,8 @@ final class WPPK_Newsletter
     private const SUBSCRIBERS_TABLE = 'wppk_newsletter_subscribers';
     private const LOG_TABLE = 'wppk_newsletter_logs';
     private const IMPORT_REPORT_TRANSIENT = 'wppk_import_report';
+    private const AWS_STATS_TRANSIENT = 'wppk_aws_ses_stats';
+    private const EVENT_LOG_OPTION = 'wppk_newsletter_event_logs';
 
     public static function boot(): void
     {
@@ -22,6 +24,7 @@ final class WPPK_Newsletter
         add_action('init', [$instance, 'register_shortcode']);
         add_action('init', [$instance, 'handle_unsubscribe']);
         add_action('init', [$instance, 'handle_confirmation']);
+        add_action('init', [$instance, 'maybe_send_scheduled_digest_on_request'], 20);
         add_action('admin_init', [$instance, 'maybe_upgrade']);
         add_action('admin_init', [$instance, 'register_settings']);
         add_action('admin_menu', [$instance, 'register_admin_page']);
@@ -31,9 +34,13 @@ final class WPPK_Newsletter
         add_action('admin_post_wppk_add_subscriber', [$instance, 'handle_admin_add_subscriber']);
         add_action('admin_post_wppk_import_subscribers', [$instance, 'handle_import_subscribers']);
         add_action('admin_post_wppk_export_subscribers', [$instance, 'handle_export_subscribers']);
+        add_action('admin_post_wppk_clear_all_subscribers', [$instance, 'handle_clear_all_subscribers']);
         add_action('admin_post_wppk_subscriber_action', [$instance, 'handle_subscriber_action']);
         add_action('admin_post_wppk_bulk_subscriber_action', [$instance, 'handle_bulk_subscriber_action']);
         add_action('admin_post_wppk_update_subscriber', [$instance, 'handle_update_subscriber']);
+        add_action('admin_post_wppk_clear_event_logs', [$instance, 'handle_clear_event_logs']);
+        add_action('admin_post_wppk_toggle_digest_pause', [$instance, 'handle_toggle_digest_pause']);
+        add_action('admin_post_wppk_switch_audience', [$instance, 'handle_switch_audience']);
         add_action('admin_post_wppk_resend_confirmation', [$instance, 'handle_resend_confirmation']);
         add_action('admin_post_wppk_send_test_digest', [$instance, 'handle_send_test_digest']);
         add_action('admin_post_wppk_send_digest_now', [$instance, 'handle_manual_send']);
@@ -71,6 +78,7 @@ final class WPPK_Newsletter
                 const presets = {
                     gmail: { host: 'smtp.gmail.com', port: '465', secure: 'ssl' },
                     ovh: { host: 'ssl0.ovh.net', port: '587', secure: 'tls' },
+                    ses: { host: 'email-smtp.eu-north-1.amazonaws.com', port: '587', secure: 'tls' },
                     custom: { host: '', port: '', secure: 'tls' }
                 };
                 $('#wppk_smtp_preset').on('change', function() {
@@ -95,7 +103,7 @@ final class WPPK_Newsletter
         $this->create_tables();
         $this->register_settings();
         update_option('wppk_newsletter_db_version', WPPKNEWSLETTER_VERSION, false);
-        $this->schedule_cron();
+        $this->ensure_cron_schedule();
     }
 
     public function deactivate(): void
@@ -106,20 +114,20 @@ final class WPPK_Newsletter
     public function maybe_upgrade(): void
     {
         $installed = get_option('wppk_newsletter_db_version', '');
-        if ($installed === WPPKNEWSLETTER_VERSION) {
-            return;
+        if ($installed !== WPPKNEWSLETTER_VERSION) {
+            $this->create_tables();
+            $this->migrate_subscribers_schema();
+            update_option('wppk_newsletter_db_version', WPPKNEWSLETTER_VERSION, false);
         }
 
-        $this->create_tables();
-        $this->migrate_subscribers_schema();
-        update_option('wppk_newsletter_db_version', WPPKNEWSLETTER_VERSION, false);
+        $this->ensure_cron_schedule();
     }
 
     public function add_cron_schedule(array $schedules): array
     {
-        $schedules['wppk_hourly_digest'] = [
-            'interval' => HOUR_IN_SECONDS,
-            'display'  => __('WP PK Newsletter hourly digest check', 'wppknewsletter'),
+        $schedules['wppk_digest_check'] = [
+            'interval' => MINUTE_IN_SECONDS,
+            'display'  => __('WP PK Newsletter digest check every minute', 'wppknewsletter'),
         ];
 
         return $schedules;
@@ -160,6 +168,10 @@ final class WPPK_Newsletter
         if ($smtpPassword === '') {
             $smtpPassword = (string) ($existing['smtp_password'] ?? $defaults['smtp_password']);
         }
+        $awsSecretKey = sanitize_text_field($input['aws_ses_secret_access_key'] ?? '');
+        if ($awsSecretKey === '') {
+            $awsSecretKey = (string) ($existing['aws_ses_secret_access_key'] ?? $defaults['aws_ses_secret_access_key']);
+        }
 
         $brandName = sanitize_text_field($input['brand_name'] ?? $defaults['brand_name']);
         $senderName = sanitize_text_field($input['sender_name'] ?? '');
@@ -185,6 +197,7 @@ final class WPPK_Newsletter
             'sender_name' => $senderName,
             'sender_email' => sanitize_email($input['sender_email'] ?? $defaults['sender_email']),
             'reply_to' => sanitize_email($input['reply_to'] ?? $defaults['reply_to']),
+            'audience_mode' => $this->sanitize_audience_mode($input['audience_mode'] ?? $defaults['audience_mode']),
             'accent_color' => sanitize_hex_color($input['accent_color'] ?? $defaults['accent_color']) ?: $defaults['accent_color'],
             'logo_url' => esc_url_raw($input['logo_url'] ?? $defaults['logo_url']),
             'email_layout' => $this->sanitize_email_layout($input['email_layout'] ?? $defaults['email_layout']),
@@ -201,7 +214,15 @@ final class WPPK_Newsletter
             'smtp_secure' => in_array(($input['smtp_secure'] ?? $defaults['smtp_secure']), ['none', 'ssl', 'tls'], true) ? $input['smtp_secure'] : 'none',
             'smtp_username' => sanitize_text_field($input['smtp_username'] ?? $defaults['smtp_username']),
             'smtp_password' => $smtpPassword,
+            'aws_ses_region' => sanitize_text_field($input['aws_ses_region'] ?? $defaults['aws_ses_region']),
+            'aws_ses_access_key_id' => sanitize_text_field($input['aws_ses_access_key_id'] ?? $defaults['aws_ses_access_key_id']),
+            'aws_ses_secret_access_key' => $awsSecretKey,
         ];
+    }
+
+    private function sanitize_audience_mode(string $value): string
+    {
+        return in_array($value, ['prod', 'dev'], true) ? $value : 'prod';
     }
 
     private function sanitize_email_layout(string $value): string
@@ -324,6 +345,7 @@ final class WPPK_Newsletter
 
         if (!empty($row['id'])) {
             if (($row['status'] ?? '') === 'active' && !empty($row['confirmed'])) {
+                $this->log_event('subscriber', 'ok', sprintf('Inscription ignorée, déjà actif : %s', $email));
                 wp_safe_redirect(add_query_arg('wppk_status', 'exists', $redirect));
                 exit;
             }
@@ -345,6 +367,7 @@ final class WPPK_Newsletter
                 ['%d']
             );
             $sent = $this->send_confirmation_email($email, $token);
+            $this->log_event('subscriber', $sent ? 'ok' : 'warn', sprintf('Confirmation renvoyée : %s', $email));
             wp_safe_redirect(add_query_arg('wppk_status', $sent ? 'confirmation_resent' : 'confirmation_failed', $redirect));
             exit;
         }
@@ -367,11 +390,13 @@ final class WPPK_Newsletter
         ]);
 
         if (!empty($wpdb->last_error)) {
+            $this->log_event('subscriber', 'error', sprintf('Échec inscription : %s', $email));
             wp_safe_redirect(add_query_arg('wppk_status', 'invalid', $redirect));
             exit;
         }
 
         $sent = $this->send_confirmation_email($email, $token);
+        $this->log_event('subscriber', $sent ? 'ok' : 'warn', sprintf('Nouvel abonné en attente : %s', $email));
         wp_safe_redirect(add_query_arg('wppk_status', $sent ? 'confirmation_sent' : 'confirmation_failed', $redirect));
         exit;
     }
@@ -833,6 +858,93 @@ final class WPPK_Newsletter
         exit;
     }
 
+    public function handle_clear_all_subscribers(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Accès refusé.', 'wppknewsletter'));
+        }
+
+        check_admin_referer('wppk_clear_all_subscribers');
+
+        $redirect_args = [
+            'page' => 'wppk-newsletter',
+            'tab' => 'subscribers',
+        ];
+
+        global $wpdb;
+        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
+        $deleted = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table}");
+        $wpdb->query("DELETE FROM {$table}");
+
+        if (!empty($wpdb->last_error)) {
+            $redirect_args['wppk_debug'] = 'Erreur SQL: ' . $wpdb->last_error;
+        } else {
+            $redirect_args['wppk_debug'] = sprintf('%d abonnés supprimés.', max(0, $deleted));
+            $this->log_event('subscriber', 'warn', sprintf('Suppression totale de la base %s : %d abonnés', strtoupper($this->get_active_audience()), max(0, $deleted)));
+        }
+
+        wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+        exit;
+    }
+
+    public function handle_clear_event_logs(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Accès refusé.', 'wppknewsletter'));
+        }
+
+        check_admin_referer('wppk_clear_event_logs');
+        update_option(self::EVENT_LOG_OPTION, [], false);
+        wp_safe_redirect(add_query_arg([
+            'page' => 'wppk-newsletter',
+            'tab' => 'settings',
+            'wppk_debug' => 'Logs vidés.',
+        ], admin_url('admin.php')));
+        exit;
+    }
+
+    public function handle_toggle_digest_pause(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Accès refusé.', 'wppknewsletter'));
+        }
+
+        check_admin_referer('wppk_toggle_digest_pause');
+
+        $paused = !$this->is_digest_paused();
+        update_option('wppk_newsletter_paused', $paused ? 1 : 0, false);
+        $this->log_event('cron', $paused ? 'warn' : 'ok', $paused ? 'Digest mis en pause.' : 'Digest repris.');
+
+        wp_safe_redirect(add_query_arg([
+            'page' => 'wppk-newsletter',
+            'tab' => 'dashboard',
+            'wppk_debug' => $paused ? 'Digest en pause.' : 'Digest repris.',
+        ], admin_url('admin.php')));
+        exit;
+    }
+
+    public function handle_switch_audience(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Accès refusé.', 'wppknewsletter'));
+        }
+
+        check_admin_referer('wppk_switch_audience');
+
+        $target = $this->sanitize_audience_mode((string) ($_POST['audience_mode'] ?? 'prod'));
+        $settings = $this->get_settings();
+        $settings['audience_mode'] = $target;
+        update_option(self::OPTION_KEY, $settings, false);
+        $this->log_event('system', 'ok', sprintf('Audience active basculée sur %s.', strtoupper($target)));
+
+        wp_safe_redirect(add_query_arg([
+            'page' => 'wppk-newsletter',
+            'tab' => 'dashboard',
+            'wppk_debug' => sprintf('Audience active : %s.', strtoupper($target)),
+        ], admin_url('admin.php')));
+        exit;
+    }
+
     public function handle_subscriber_action(): void
     {
         if (!current_user_can('manage_options')) {
@@ -987,19 +1099,59 @@ final class WPPK_Newsletter
 
     public function maybe_send_scheduled_digest(): void
     {
-        $settings = $this->get_settings();
+        $source = current_filter() === self::CRON_HOOK ? 'cron' : 'request';
+        if ($this->is_digest_paused()) {
+            $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : digest en pause', $source));
+            return;
+        }
         $today = wp_date('Y-m-d');
-        $hour = (int) wp_date('G');
         $last_sent = get_option('wppk_newsletter_last_sent_date', '');
+        $now_timestamp = current_time('timestamp');
+        $current_hm = (int) wp_date('Hi', $now_timestamp);
+        $lock_key = 'wppk_digest_send_lock';
 
-        if ($hour !== (int) $settings['daily_hour'] || $last_sent === $today) {
+        if ($current_hm < 1410 || $current_hm > 2000) {
+            $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : hors fenêtre (%s)', $source, wp_date('H:i', $now_timestamp)));
             return;
         }
 
-        $result = $this->send_digest_to_active_subscribers(false);
-        if ($result['sent'] > 0) {
-            update_option('wppk_newsletter_last_sent_date', $today, false);
+        if ($last_sent === $today) {
+            $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : digest déjà envoyé aujourd’hui', $source));
+            return;
         }
+
+        if (get_transient($lock_key)) {
+            $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : verrou actif', $source));
+            return;
+        }
+
+        $this->log_event('cron', 'ok', sprintf('Déclenchement %s OK, tentative d’envoi', $source));
+        set_transient($lock_key, '1', 15 * MINUTE_IN_SECONDS);
+        update_option('wppk_newsletter_last_sent_date', $today, false);
+
+        $result = $this->send_digest_to_active_subscribers(false);
+        if (($result['sent'] ?? 0) <= 0) {
+            update_option('wppk_newsletter_last_sent_date', '', false);
+            $this->log_event('cron', 'warn', sprintf('Envoi stoppé : %s', (string) ($result['reason'] ?? 'raison inconnue')));
+        } else {
+            $this->log_event('cron', 'ok', sprintf('Envoi exécuté : %d emails', (int) ($result['sent'] ?? 0)));
+        }
+        delete_transient($lock_key);
+    }
+
+    public function maybe_send_scheduled_digest_on_request(): void
+    {
+        if (wp_doing_ajax() || (defined('REST_REQUEST') && REST_REQUEST) || is_feed()) {
+            return;
+        }
+
+        $lock_key = 'wppk_digest_request_lock';
+        if (get_transient($lock_key)) {
+            return;
+        }
+
+        set_transient($lock_key, '1', 55);
+        $this->maybe_send_scheduled_digest();
     }
 
     public function render_admin_page(): void
@@ -1043,6 +1195,7 @@ final class WPPK_Newsletter
                 <header class="wppk-topbar">
                     <div class="wppk-topbar__intro">
                         <h1 class="wppk-admin-title"><?php echo esc_html($page_titles[$tab] ?? 'Newsletter'); ?></h1>
+                        <div class="wppk-admin-audience-badge">Audience active : <?php echo esc_html(strtoupper($this->get_active_audience())); ?></div>
                     </div>
                     <nav class="wppk-topbar__nav" aria-label="Navigation newsletter">
                         <?php foreach ($tabs as $key => $label) : ?>
@@ -1072,7 +1225,7 @@ final class WPPK_Newsletter
                     <div class="notice notice-warning"><p><?php echo esc_html(wp_unslash($_GET['wppk_debug'])); ?></p></div>
                 <?php endif; ?>
 
-                <?php if ($tab !== 'dashboard') : ?>
+                <?php if ($tab !== 'dashboard' && $tab !== 'stats') : ?>
                 <?php $context_cards = $this->get_contextual_stat_cards($tab, $settings, $stats, $posts); ?>
                 <div class="wppk-stat-grid <?php echo $tab === 'stats' ? 'wppk-stat-grid--compact' : ''; ?>">
                     <?php foreach ($context_cards as $card) : ?>
@@ -1101,6 +1254,7 @@ final class WPPK_Newsletter
                                         <h3 class="wppk-settings-section__title">Identité</h3>
                                     </div>
                                     <div class="wppk-settings-grid">
+                                        <div class="wppk-field"><label for="audience_mode">Audience active</label><select name="<?php echo esc_attr(self::OPTION_KEY); ?>[audience_mode]" id="audience_mode"><option value="prod" <?php selected($settings['audience_mode'], 'prod'); ?>>Prod</option><option value="dev" <?php selected($settings['audience_mode'], 'dev'); ?>>Dev</option></select><p class="description">Prod envoie à la vraie base. Dev utilise une base isolée pour tester avec quelques emails.</p></div>
                                         <div class="wppk-field"><label for="brand_name">Nom affiché</label><input name="<?php echo esc_attr(self::OPTION_KEY); ?>[brand_name]" id="brand_name" type="text" value="<?php echo esc_attr($settings['brand_name']); ?>"><p class="description">Utilisé à la fois comme nom de marque dans le digest et comme nom d’expéditeur par défaut.</p></div>
                                         <div class="wppk-field"><label for="sender_email">Email expediteur</label><input name="<?php echo esc_attr(self::OPTION_KEY); ?>[sender_email]" id="sender_email" type="email" value="<?php echo esc_attr($settings['sender_email']); ?>"></div>
                                         <div class="wppk-field"><label for="reply_to">Reply-To</label><input name="<?php echo esc_attr(self::OPTION_KEY); ?>[reply_to]" id="reply_to" type="email" value="<?php echo esc_attr($settings['reply_to']); ?>"></div>
@@ -1149,12 +1303,16 @@ final class WPPK_Newsletter
                                     </div>
                                     <div class="wppk-settings-grid">
                                         <div class="wppk-field wppk-field--span-3"><label class="wppk-field__checkbox"><input type="checkbox" name="<?php echo esc_attr(self::OPTION_KEY); ?>[smtp_enabled]" id="smtp_enabled" value="1" <?php checked((int) $settings['smtp_enabled'], 1); ?>> <span>Utiliser la configuration SMTP ci-dessous pour les envois du plugin</span></label></div>
-                                        <div class="wppk-field"><label for="wppk_smtp_preset">Preset SMTP</label><select id="wppk_smtp_preset"><option value="custom">Custom</option><option value="gmail">Gmail</option><option value="ovh">OVH / Zimbra / Spacemail</option></select><p class="description">Préremplit automatiquement host, port et sécurité.</p><div class="wppk-help-links"><a href="https://myaccount.google.com/security" target="_blank" rel="noreferrer">Google Security</a><a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">Google App Passwords</a><a href="https://support.google.com/accounts/answer/185833" target="_blank" rel="noreferrer">Aide Google</a></div><div class="wppk-help-links wppk-help-links--providers"><a href="https://workspace.google.com/pricing.html" target="_blank" rel="noreferrer">Offres Gmail</a><a href="https://www.ovhcloud.com/fr/emails/" target="_blank" rel="noreferrer">Offres OVH</a><a href="https://aws.amazon.com/fr/ses/pricing/" target="_blank" rel="noreferrer">Tarifs AWS SES</a></div></div>
+                                        <div class="wppk-field"><label for="wppk_smtp_preset">Preset SMTP</label><select id="wppk_smtp_preset"><option value="custom">Custom</option><option value="ses">AWS SES</option><option value="gmail">Gmail</option><option value="ovh">OVH / Zimbra / Spacemail</option></select><p class="description">Préremplit automatiquement host, port et sécurité.</p><div class="wppk-help-links"><a href="https://myaccount.google.com/security" target="_blank" rel="noreferrer">Google Security</a><a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">Google App Passwords</a><a href="https://support.google.com/accounts/answer/185833" target="_blank" rel="noreferrer">Aide Google</a></div><div class="wppk-help-links wppk-help-links--providers"><a href="https://workspace.google.com/pricing.html" target="_blank" rel="noreferrer">Offres Gmail</a><a href="https://www.ovhcloud.com/fr/emails/" target="_blank" rel="noreferrer">Offres OVH</a><a href="https://aws.amazon.com/fr/ses/pricing/" target="_blank" rel="noreferrer">Tarifs AWS SES</a></div></div>
                                         <div class="wppk-field"><label for="smtp_host">SMTP host</label><input name="<?php echo esc_attr(self::OPTION_KEY); ?>[smtp_host]" id="smtp_host" type="text" value="<?php echo esc_attr($settings['smtp_host']); ?>"></div>
                                         <div class="wppk-field"><label for="smtp_port">SMTP port</label><input type="number" min="1" max="65535" name="<?php echo esc_attr(self::OPTION_KEY); ?>[smtp_port]" id="smtp_port" value="<?php echo esc_attr((string) $settings['smtp_port']); ?>"></div>
                                         <div class="wppk-field"><label for="smtp_secure">Sécurité SMTP</label><select name="<?php echo esc_attr(self::OPTION_KEY); ?>[smtp_secure]" id="smtp_secure"><option value="none" <?php selected($settings['smtp_secure'], 'none'); ?>>Aucune</option><option value="ssl" <?php selected($settings['smtp_secure'], 'ssl'); ?>>SSL</option><option value="tls" <?php selected($settings['smtp_secure'], 'tls'); ?>>TLS</option></select></div>
                                         <div class="wppk-field"><label for="smtp_username">SMTP username</label><input name="<?php echo esc_attr(self::OPTION_KEY); ?>[smtp_username]" id="smtp_username" type="text" value="<?php echo esc_attr($settings['smtp_username']); ?>"></div>
                                         <div class="wppk-field"><label for="smtp_password">SMTP password / app password</label><input type="password" name="<?php echo esc_attr(self::OPTION_KEY); ?>[smtp_password]" id="smtp_password" value="" autocomplete="new-password" placeholder="<?php echo !empty($settings['smtp_password']) ? '••••••••••••••••' : 'Laisser vide pour conserver le mot de passe actuel'; ?>"><p class="description">Pour Gmail, utilise un mot de passe d’application Google, pas ton mot de passe principal.</p></div>
+                                        <div class="wppk-field wppk-field--span-3"><label style="margin-bottom:8px;display:block;">AWS SES API</label><p class="description" style="margin-top:0;">Utilisé pour lire les vraies stats SES facturées dans l’onglet Statistiques.</p></div>
+                                        <div class="wppk-field wppk-field--span-3"><label for="aws_ses_region">AWS SES region</label><input name="<?php echo esc_attr(self::OPTION_KEY); ?>[aws_ses_region]" id="aws_ses_region" type="text" value="<?php echo esc_attr($settings['aws_ses_region']); ?>" placeholder="eu-north-1"></div>
+                                        <div class="wppk-field"><label for="aws_ses_access_key_id">AWS Access Key ID</label><input name="<?php echo esc_attr(self::OPTION_KEY); ?>[aws_ses_access_key_id]" id="aws_ses_access_key_id" type="text" value="<?php echo esc_attr($settings['aws_ses_access_key_id']); ?>" placeholder="AKIA..."></div>
+                                        <div class="wppk-field"><label for="aws_ses_secret_access_key">AWS Secret Access Key</label><input type="password" name="<?php echo esc_attr(self::OPTION_KEY); ?>[aws_ses_secret_access_key]" id="aws_ses_secret_access_key" value="" autocomplete="new-password" placeholder="<?php echo !empty($settings['aws_ses_secret_access_key']) ? '••••••••••••••••' : 'Laisser vide pour conserver la secret key actuelle'; ?>"><p class="description">Crée un user IAM lecture seule SES pour ces stats.</p></div>
                                     </div>
                                     <div class="wppk-settings-section__footer">
                                         <?php submit_button(__('Enregistrer', 'wppknewsletter'), 'primary', 'submit', false); ?>
@@ -1162,6 +1320,21 @@ final class WPPK_Newsletter
                                 </section>
                             </div>
                         </form>
+                    </section>
+
+                    <section class="wppk-panel">
+                        <div class="wppk-panel__header">
+                            <div>
+                                <h2 class="wppk-panel__title">Logs internes</h2>
+                                <p class="wppk-panel__copy">Nouveaux abonnés, désinscriptions et décisions du scheduler minute par minute.</p>
+                            </div>
+                            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                                <input type="hidden" name="action" value="wppk_clear_event_logs">
+                                <?php wp_nonce_field('wppk_clear_event_logs'); ?>
+                                <?php submit_button(__('Vider les logs', 'wppknewsletter'), 'secondary', '', false); ?>
+                            </form>
+                        </div>
+                        <?php echo $this->render_event_logs_panel(); ?>
                     </section>
 
                 </div>
@@ -1296,8 +1469,13 @@ final class WPPK_Newsletter
                         <?php wp_nonce_field('wppk_export_subscribers'); ?>
                         <?php submit_button(__('Exporter CSV', 'wppknewsletter'), 'secondary', '', false); ?>
                     </form>
+                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="wppk-subscriber-form wppk-subscriber-form--inline" onsubmit="return window.confirm('Supprimer tous les abonnés ? Cette action est irreversible.');">
+                        <input type="hidden" name="action" value="wppk_clear_all_subscribers">
+                        <?php wp_nonce_field('wppk_clear_all_subscribers'); ?>
+                        <?php submit_button(__('Supprimer tous les abonnés', 'wppknewsletter'), 'delete wppk-button-danger', '', false); ?>
+                    </form>
                 </div>
-                <p class="wppk-subscriber-card__hint">CSV : <code>email,status,source,signup_process,delivery_channel,content_mode,preferred_hour,confirmed</code></p>
+                <p class="wppk-subscriber-card__hint">Audience active : <strong><?php echo esc_html(strtoupper($this->get_active_audience())); ?></strong> · CSV : <code>email,status,source,signup_process,delivery_channel,content_mode,preferred_hour,confirmed</code></p>
             </section>
 
             <section class="wppk-subscriber-card">
@@ -1388,11 +1566,20 @@ final class WPPK_Newsletter
         echo '<script>document.addEventListener("DOMContentLoaded",function(){var input=document.getElementById("wppk_import_file");var label=document.getElementById("wppk_import_file_name");if(!input||!label)return;input.addEventListener("change",function(){label.textContent=input.files&&input.files[0]?input.files[0].name:"Aucun fichier choisi";});});</script>';
         echo $this->render_subscriber_pagination($page_num, $per_page, $total, $search, $status_filter, $channel_filter);
         if ($edit_id) {
+            $edit_row = null;
             foreach ($rows as $row) {
                 if ((int) $row['id'] === $edit_id) {
-                    $this->render_subscriber_edit_drawer($row, $search, $status_filter, $channel_filter, $page_num, $per_page);
+                    $edit_row = $row;
                     break;
                 }
+            }
+            if ($edit_row === null) {
+                global $wpdb;
+                $table = $this->table_name(self::SUBSCRIBERS_TABLE);
+                $edit_row = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE id = %d", $edit_id), ARRAY_A) ?: null;
+            }
+            if (is_array($edit_row)) {
+                $this->render_subscriber_edit_drawer($edit_row, $search, $status_filter, $channel_filter, $page_num, $per_page);
             }
         }
     }
@@ -1403,15 +1590,31 @@ final class WPPK_Newsletter
         $test_recipient = $settings['preview_email'] ?: get_option('admin_email');
         $growth = $this->get_subscriber_growth_data('day');
         $sending_summary = $this->get_stats_dashboard_data('day');
+        $aws_sending_data = $this->get_aws_ses_sending_data('day');
+        $overview_metrics = $this->get_dashboard_overview_metrics();
+        $is_paused = $this->is_digest_paused();
+        $active_audience = $this->get_active_audience();
 
         echo '<div class="wppk-dashboard-grid">';
 
         echo '<section class="wppk-panel wppk-dashboard-card wppk-dashboard-card--hero">';
-        echo '<div class="wppk-panel__header"><div><h2 class="wppk-panel__title">Vue d’ensemble</h2><p class="wppk-panel__copy">Le point d’entrée rapide pour ton digest, tes abonnés et les derniers contenus.</p></div><div class="wppk-version-badge">v' . esc_html(WPPKNEWSLETTER_VERSION) . '</div></div>';
+        echo '<div class="wppk-panel__header"><div><h2 class="wppk-panel__title">Vue d’ensemble</h2><p class="wppk-panel__copy">Le point d’entrée rapide pour ton digest, tes abonnés et les derniers contenus.</p></div><div class="wppk-dashboard-hero-actions">';
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="wppk-dashboard-hero-form">';
+        echo '<input type="hidden" name="action" value="wppk_switch_audience">';
+        wp_nonce_field('wppk_switch_audience');
+        echo '<input type="hidden" name="audience_mode" value="' . esc_attr($active_audience === 'prod' ? 'dev' : 'prod') . '">';
+        echo '<button type="submit" class="button button-secondary">' . esc_html($active_audience === 'prod' ? 'Passer en DEV' : 'Passer en PROD') . '</button>';
+        echo '</form>';
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="wppk-dashboard-hero-form">';
+        echo '<input type="hidden" name="action" value="wppk_toggle_digest_pause">';
+        wp_nonce_field('wppk_toggle_digest_pause');
+        echo '<button type="submit" class="button ' . esc_attr($is_paused ? 'button-primary' : 'button-secondary') . '">' . esc_html($is_paused ? 'Reprendre' : 'Mettre en pause') . '</button>';
+        echo '</form>';
+        echo '<div class="wppk-version-badge">v' . esc_html(WPPKNEWSLETTER_VERSION) . '</div></div></div>';
         echo '<div class="wppk-stat-grid wppk-stat-grid--dashboard">';
-        echo $this->render_stat_card(__('Abonnes actifs', 'wppknewsletter'), (string) $stats['active'], __('Base active', 'wppknewsletter'));
-        echo $this->render_stat_card(__('Posts du jour', 'wppknewsletter'), (string) $stats['posts_today'], __('Contenus prêts à pousser', 'wppknewsletter'));
-        echo $this->render_stat_card(__('Dernier envoi', 'wppknewsletter'), get_option('wppk_newsletter_last_sent_date', 'jamais'), __('Dernière campagne', 'wppknewsletter'));
+        echo $this->render_stat_card(__('Abonnes actifs', 'wppknewsletter'), $overview_metrics['active_value'], $overview_metrics['active_meta']);
+        echo $this->render_stat_card(__('Emails envoyes', 'wppknewsletter'), $overview_metrics['sent_value'], $overview_metrics['sent_meta']);
+        echo $this->render_stat_card($overview_metrics['third_title'], $overview_metrics['third_value'], $overview_metrics['third_meta']);
         echo '</div>';
         echo '</section>';
 
@@ -1451,8 +1654,8 @@ final class WPPK_Newsletter
         );
         echo $this->render_line_chart_card(
             'Sending messages',
-            'Emails envoyés par période',
-            $sending_summary['sending_series'],
+            is_array($aws_sending_data) ? 'Emails envoyés par AWS SES' : 'Emails envoyés par période',
+            is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $sending_summary['sending_series'],
             'wppk-chart-card--mini'
         );
         echo '</div>';
@@ -1500,6 +1703,57 @@ final class WPPK_Newsletter
         ) ?: [];
     }
 
+    private function get_dashboard_overview_metrics(): array
+    {
+        global $wpdb;
+        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
+        $active_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'active' AND confirmed = 1");
+        $total_contacts = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table}");
+
+        $tz = wp_timezone();
+        $now = new DateTimeImmutable('now', $tz);
+        $seven_days_ago = $now->modify('-6 days')->setTime(0, 0, 0)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $subscribed_7d = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE subscribed_at >= %s", $seven_days_ago));
+        $unsubscribed_7d = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE unsubscribed_at >= %s", $seven_days_ago));
+        $net_growth_7d = $subscribed_7d - $unsubscribed_7d;
+
+        $active_value = number_format_i18n($active_count, 0) . ' / ' . number_format_i18n($total_contacts, 0);
+        $active_meta = sprintf(__('Base active · %+d / 7j', 'wppknewsletter'), $net_growth_7d);
+
+        $sent_value = '—';
+        $sent_meta = __('AWS SES, dernières 24h', 'wppknewsletter');
+        $third_title = __('Desinscriptions', 'wppknewsletter');
+        $third_value = number_format_i18n($unsubscribed_7d, 0);
+        $third_meta = __('7 derniers jours', 'wppknewsletter');
+
+        $aws_quota = $this->get_aws_ses_stats();
+
+        if (is_array($aws_quota)) {
+            $sent_value = number_format_i18n($aws_quota['sent_last_24_hours'], 0);
+        } else {
+            $summary = $this->get_stats_dashboard_data('day');
+            $sent_value = number_format_i18n((int) ($summary['emails_total'] ?? 0), 0);
+            $sent_meta = __('Historique plugin, dernières 24h', 'wppknewsletter');
+        }
+
+        if (is_array($aws_quota)) {
+            $quota_remaining = max(0, (int) round($aws_quota['max_24_hour_send'] - $aws_quota['sent_last_24_hours']));
+            $third_title = __('Quota restant', 'wppknewsletter');
+            $third_value = number_format_i18n($quota_remaining, 0);
+            $third_meta = __('AWS SES, 24h glissantes', 'wppknewsletter');
+        }
+
+        return [
+            'active_value' => $active_value,
+            'active_meta' => $active_meta,
+            'sent_value' => $sent_value,
+            'sent_meta' => $sent_meta,
+            'third_title' => $third_title,
+            'third_value' => $third_value,
+            'third_meta' => $third_meta,
+        ];
+    }
+
     private function get_delivery_service_label(array $settings): string
     {
         if (empty($settings['smtp_enabled']) || empty($settings['smtp_host'])) {
@@ -1523,13 +1777,340 @@ final class WPPK_Newsletter
         return (string) $settings['smtp_host'];
     }
 
+    private function get_aws_ses_config(): ?array
+    {
+        $settings = $this->get_settings();
+        $region = trim((string) ($settings['aws_ses_region'] ?? ''));
+        $access_key = trim((string) ($settings['aws_ses_access_key_id'] ?? ''));
+        $secret_key = trim((string) ($settings['aws_ses_secret_access_key'] ?? ''));
+        $session_token = defined('WPPK_AWS_SES_SESSION_TOKEN') ? trim((string) WPPK_AWS_SES_SESSION_TOKEN) : '';
+
+        if ($region === '' && defined('WPPK_AWS_SES_REGION')) {
+            $region = trim((string) WPPK_AWS_SES_REGION);
+        }
+        if ($access_key === '' && defined('WPPK_AWS_SES_ACCESS_KEY_ID')) {
+            $access_key = trim((string) WPPK_AWS_SES_ACCESS_KEY_ID);
+        }
+        if ($secret_key === '' && defined('WPPK_AWS_SES_SECRET_ACCESS_KEY')) {
+            $secret_key = trim((string) WPPK_AWS_SES_SECRET_ACCESS_KEY);
+        }
+
+        if ($region === '' && !empty($settings['smtp_host']) && preg_match('/email-smtp\.([a-z0-9-]+)\.amazonaws\.com/i', (string) $settings['smtp_host'], $matches)) {
+            $region = strtolower($matches[1]);
+        }
+
+        if ($region === '' || $access_key === '' || $secret_key === '') {
+            return null;
+        }
+
+        return [
+            'region' => $region,
+            'access_key' => $access_key,
+            'secret_key' => $secret_key,
+            'session_token' => $session_token,
+        ];
+    }
+
+    private function get_aws_ses_stats(): ?array
+    {
+        $config = $this->get_aws_ses_config();
+        if ($config === null) {
+            return null;
+        }
+
+        $cache_key = self::AWS_STATS_TRANSIENT . '_' . md5($config['region'] . '|' . $config['access_key']);
+        $cached = get_transient($cache_key);
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $result = $this->aws_ses_query_request($config, 'GetSendQuota');
+        if (!is_array($result)) {
+            return null;
+        }
+
+        $stats = [
+            'sent_last_24_hours' => isset($result['SentLast24Hours']) ? (float) $result['SentLast24Hours'] : 0.0,
+            'max_24_hour_send' => isset($result['Max24HourSend']) ? (float) $result['Max24HourSend'] : 0.0,
+            'max_send_rate' => isset($result['MaxSendRate']) ? (float) $result['MaxSendRate'] : 0.0,
+            'region' => $config['region'],
+        ];
+
+        set_transient($cache_key, $stats, 5 * MINUTE_IN_SECONDS);
+
+        return $stats;
+    }
+
+    private function get_aws_ses_send_statistics_raw(): ?array
+    {
+        $config = $this->get_aws_ses_config();
+        if ($config === null) {
+            return null;
+        }
+
+        $cache_key = self::AWS_STATS_TRANSIENT . '_history_' . md5($config['region'] . '|' . $config['access_key']);
+        $cached = get_transient($cache_key);
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $result = $this->aws_ses_query_request($config, 'GetSendStatistics');
+        if (!is_array($result) || empty($result['SendDataPoints']) || !is_array($result['SendDataPoints'])) {
+            return null;
+        }
+
+        set_transient($cache_key, $result['SendDataPoints'], 5 * MINUTE_IN_SECONDS);
+
+        return $result['SendDataPoints'];
+    }
+
+    private function get_aws_ses_sending_data(string $range): ?array
+    {
+        $raw_points = $this->get_aws_ses_send_statistics_raw();
+        if (!is_array($raw_points) || !$raw_points) {
+            return null;
+        }
+
+        $tz = wp_timezone();
+        $now = new DateTimeImmutable('now', $tz);
+        $buckets = [];
+        $recent_logs = [];
+
+        if ($range === 'week') {
+            for ($i = 6; $i >= 0; $i--) {
+                $bucket_time = $now->setTime(0, 0)->modify("-{$i} days");
+                $bucket_key = $bucket_time->format('Y-m-d');
+                $buckets[$bucket_key] = [
+                    'label' => $bucket_time->format('M d'),
+                    'start' => $bucket_time,
+                    'end' => $bucket_time->setTime(23, 59, 59),
+                    'value' => 0,
+                ];
+            }
+        } elseif ($range === 'month') {
+            for ($i = 13; $i >= 0; $i--) {
+                $bucket_time = $now->setTime(0, 0)->modify("-{$i} days");
+                $bucket_key = $bucket_time->format('Y-m-d');
+                $buckets[$bucket_key] = [
+                    'label' => $bucket_time->format('M d'),
+                    'start' => $bucket_time,
+                    'end' => $bucket_time->setTime(23, 59, 59),
+                    'value' => 0,
+                ];
+            }
+        } else {
+            for ($i = 23; $i >= 0; $i--) {
+                $bucket_time = $now->setTime((int) $now->format('H'), 0, 0)->modify("-{$i} hours");
+                $bucket_key = $bucket_time->format('Y-m-d H:00');
+                $buckets[$bucket_key] = [
+                    'label' => $bucket_time->format('H:i'),
+                    'start' => $bucket_time,
+                    'end' => $bucket_time->setTime((int) $bucket_time->format('H'), 59, 59),
+                    'value' => 0,
+                ];
+            }
+        }
+
+        $daily_rollup = [];
+        foreach ($raw_points as $point) {
+            if (empty($point['Timestamp'])) {
+                continue;
+            }
+
+            $timestamp = new DateTimeImmutable((string) $point['Timestamp']);
+            $local_time = $timestamp->setTimezone($tz);
+            $delivery_attempts = (int) round((float) ($point['DeliveryAttempts'] ?? 0));
+
+            $day_key = $local_time->format('Y-m-d');
+            if (!isset($daily_rollup[$day_key])) {
+                $daily_rollup[$day_key] = [
+                    'sent_at' => $local_time->setTime(0, 0)->format('Y-m-d H:i:s'),
+                    'emails_sent' => 0,
+                    'posts_count' => '—',
+                ];
+            }
+            $daily_rollup[$day_key]['emails_sent'] += $delivery_attempts;
+
+            $bucket_key = $range === 'day'
+                ? $local_time->format('Y-m-d H:00')
+                : $day_key;
+
+            if (isset($buckets[$bucket_key])) {
+                $buckets[$bucket_key]['value'] += $delivery_attempts;
+            }
+        }
+
+        foreach (array_reverse($daily_rollup, true) as $row) {
+            $recent_logs[] = $row;
+            if (count($recent_logs) >= 12) {
+                break;
+            }
+        }
+
+        $sending_series = [];
+        foreach ($buckets as $bucket) {
+            $sending_series[] = [
+                'label' => $bucket['label'],
+                'value' => (int) $bucket['value'],
+            ];
+        }
+
+        return [
+            'sending_series' => $sending_series,
+            'recent_logs' => $recent_logs,
+        ];
+    }
+
+    private function aws_ses_query_request(array $config, string $action): ?array
+    {
+        $service = 'ses';
+        $host = 'email.' . $config['region'] . '.amazonaws.com';
+        $endpoint = 'https://' . $host . '/';
+        $content_type = 'application/x-www-form-urlencoded; charset=utf-8';
+        $amz_date = gmdate('Ymd\THis\Z');
+        $date_stamp = gmdate('Ymd');
+        $body = http_build_query(
+            [
+                'Action' => $action,
+                'Version' => '2010-12-01',
+            ],
+            '',
+            '&',
+            PHP_QUERY_RFC3986
+        );
+        $payload_hash = hash('sha256', $body);
+
+        $canonical_headers = 'content-type:' . $content_type . "\n" . 'host:' . $host . "\n" . 'x-amz-date:' . $amz_date . "\n";
+        $signed_headers = 'content-type;host;x-amz-date';
+
+        if (!empty($config['session_token'])) {
+            $canonical_headers .= 'x-amz-security-token:' . trim((string) $config['session_token']) . "\n";
+            $signed_headers .= ';x-amz-security-token';
+        }
+
+        $canonical_request = implode(
+            "\n",
+            [
+                'POST',
+                '/',
+                '',
+                $canonical_headers,
+                $signed_headers,
+                $payload_hash,
+            ]
+        );
+
+        $credential_scope = $date_stamp . '/' . $config['region'] . '/' . $service . '/aws4_request';
+        $string_to_sign = implode(
+            "\n",
+            [
+                'AWS4-HMAC-SHA256',
+                $amz_date,
+                $credential_scope,
+                hash('sha256', $canonical_request),
+            ]
+        );
+        $signing_key = $this->aws_signing_key($config['secret_key'], $date_stamp, $config['region'], $service);
+        $signature = hash_hmac('sha256', $string_to_sign, $signing_key);
+        $authorization = 'AWS4-HMAC-SHA256 Credential=' . $config['access_key'] . '/' . $credential_scope . ', SignedHeaders=' . $signed_headers . ', Signature=' . $signature;
+
+        $headers = [
+            'Content-Type' => $content_type,
+            'Host' => $host,
+            'X-Amz-Date' => $amz_date,
+            'Authorization' => $authorization,
+        ];
+
+        if (!empty($config['session_token'])) {
+            $headers['X-Amz-Security-Token'] = $config['session_token'];
+        }
+
+        $response = wp_remote_post(
+            $endpoint,
+            [
+                'timeout' => 12,
+                'headers' => $headers,
+                'body' => $body,
+            ]
+        );
+
+        if (is_wp_error($response)) {
+            return null;
+        }
+
+        $status_code = (int) wp_remote_retrieve_response_code($response);
+        if ($status_code < 200 || $status_code >= 300) {
+            return null;
+        }
+
+        $xml_string = wp_remote_retrieve_body($response);
+        if ($xml_string === '') {
+            return null;
+        }
+
+        libxml_use_internal_errors(true);
+        $xml = simplexml_load_string($xml_string);
+        if (!$xml instanceof SimpleXMLElement) {
+            return null;
+        }
+
+        $result_node = $xml->{$action . 'Response'}->{$action . 'Result'} ?? null;
+        if (!$result_node instanceof SimpleXMLElement && isset($xml->{$action . 'Result'})) {
+            $result_node = $xml->{$action . 'Result'};
+        }
+
+        if (!$result_node instanceof SimpleXMLElement) {
+            return null;
+        }
+
+        $data = [];
+        foreach ($result_node->children() as $child) {
+            if ($child->getName() === 'SendDataPoints') {
+                $points = [];
+                foreach ($child->children() as $member) {
+                    $point = [];
+                    foreach ($member->children() as $item) {
+                        $point[$item->getName()] = (string) $item;
+                    }
+                    if ($point) {
+                        $points[] = $point;
+                    }
+                }
+                $data['SendDataPoints'] = $points;
+                continue;
+            }
+            $data[$child->getName()] = (string) $child;
+        }
+
+        return $data ?: null;
+    }
+
+    private function aws_signing_key(string $secret_key, string $date_stamp, string $region, string $service): string
+    {
+        $k_date = hash_hmac('sha256', $date_stamp, 'AWS4' . $secret_key, true);
+        $k_region = hash_hmac('sha256', $region, $k_date, true);
+        $k_service = hash_hmac('sha256', $service, $k_region, true);
+
+        return hash_hmac('sha256', 'aws4_request', $k_service, true);
+    }
+
     private function render_subscriber_actions(int $subscriber_id): string
     {
+        $search = sanitize_text_field(wp_unslash($_GET['subscriber_s'] ?? ''));
+        $status_filter = sanitize_key($_GET['subscriber_status'] ?? '');
+        $channel_filter = sanitize_text_field(wp_unslash($_GET['subscriber_channel'] ?? ''));
+        $page_num = max(1, absint($_GET['subscriber_page_num'] ?? 1));
+        $per_page = max(1, absint($_GET['subscriber_per_page'] ?? 100));
         $edit_url = add_query_arg(
             [
                 'page' => 'wppk-newsletter',
                 'tab' => 'subscribers',
                 'edit_subscriber' => $subscriber_id,
+                'subscriber_s' => $search,
+                'subscriber_status' => $status_filter,
+                'subscriber_channel' => $channel_filter,
+                'subscriber_page_num' => $page_num,
+                'subscriber_per_page' => $per_page,
             ],
             admin_url('admin.php')
         );
@@ -1718,17 +2299,40 @@ final class WPPK_Newsletter
 
         if ($tab === 'stats') {
             $summary = $this->get_stats_dashboard_data('day');
+            $aws_ses_stats = $this->get_aws_ses_stats();
+
+            if (is_array($aws_ses_stats)) {
+                $quota_remaining = max(0, (int) round($aws_ses_stats['max_24_hour_send'] - $aws_ses_stats['sent_last_24_hours']));
+
+                return [
+                    [
+                        'title' => __('Emails envoyés', 'wppknewsletter'),
+                        'value' => number_format_i18n($aws_ses_stats['sent_last_24_hours'], 0),
+                        'meta' => __('AWS SES, dernières 24h', 'wppknewsletter'),
+                    ],
+                    [
+                        'title' => __('Quota restant', 'wppknewsletter'),
+                        'value' => number_format_i18n($quota_remaining, 0),
+                        'meta' => __('AWS SES, fenêtre glissante 24h', 'wppknewsletter'),
+                    ],
+                    [
+                        'title' => __('Débit max', 'wppknewsletter'),
+                        'value' => number_format_i18n($aws_ses_stats['max_send_rate'], 0) . '/s',
+                        'meta' => sprintf(__('AWS SES, region %s', 'wppknewsletter'), strtoupper($aws_ses_stats['region'])),
+                    ],
+                ];
+            }
 
             return [
                 [
                     'title' => __('Emails envoyés', 'wppknewsletter'),
                     'value' => (string) $summary['emails_total'],
-                    'meta' => __('Sur les dernières 24h', 'wppknewsletter'),
+                    'meta' => __('Historique interne du plugin', 'wppknewsletter'),
                 ],
                 [
                     'title' => __('Campagnes', 'wppknewsletter'),
                     'value' => (string) $summary['campaigns_total'],
-                    'meta' => __('Déclenchements sur les dernières 24h', 'wppknewsletter'),
+                    'meta' => __('Déclenchements enregistrés localement', 'wppknewsletter'),
                 ],
                 [
                     'title' => __('Dernier envoi', 'wppknewsletter'),
@@ -1808,7 +2412,8 @@ final class WPPK_Newsletter
         }
 
         $summary = $this->get_stats_dashboard_data($range);
-        $channel_counts = $this->get_channel_counts();
+        $aws_ses_stats = $this->get_aws_ses_stats();
+        $aws_sending_data = is_array($aws_ses_stats) ? $this->get_aws_ses_sending_data($range) : null;
 
         echo '<div class="wppk-stats-toolbar">';
         echo '<div class="wppk-stats-range">';
@@ -1817,40 +2422,46 @@ final class WPPK_Newsletter
         echo $this->render_range_switch('month', 'Month', $range, 'overview');
         echo '</div>';
         echo '</div>';
+        echo '<p class="description" style="margin:8px 0 12px;"><a href="https://eu-north-1.console.aws.amazon.com/ses/home?region=eu-north-1#/account" target="_blank" rel="noreferrer">Ouvrir le dashboard AWS SES</a></p>';
 
-        echo '<h3 class="wppk-stats-section-title">Getting & retaining followers</h3>';
-        echo '<div class="wppk-channel-grid">';
-        echo $this->render_channel_card('Any channel', $summary['current_active'], true);
-        foreach ($channel_counts as $label => $count) {
-            echo $this->render_channel_card($label, $count, false);
+        echo '<div class="wppk-stat-grid wppk-stat-grid--compact" style="margin-top:8px;">';
+        if (is_array($aws_ses_stats)) {
+            $quota_remaining = max(0, (int) round($aws_ses_stats['max_24_hour_send'] - $aws_ses_stats['sent_last_24_hours']));
+            $month_emails = $this->get_current_month_email_total();
+            $estimated_cost = $this->format_estimated_ses_cost((float) $month_emails);
+            echo $this->render_stat_card(__('Emails envoyes', 'wppknewsletter'), number_format_i18n($aws_ses_stats['sent_last_24_hours'], 0), __('AWS SES, dernieres 24h', 'wppknewsletter'));
+            echo $this->render_stat_card(__('Quota restant', 'wppknewsletter'), number_format_i18n($quota_remaining, 0), __('AWS SES, fenetre glissante 24h', 'wppknewsletter'));
+            echo $this->render_stat_card(__('Debit max', 'wppknewsletter'), number_format_i18n($aws_ses_stats['max_send_rate'], 0) . '/s', sprintf(__('AWS SES, region %s', 'wppknewsletter'), strtoupper($aws_ses_stats['region'])));
+            echo $this->render_stat_card(__('Cout estime', 'wppknewsletter'), $estimated_cost, sprintf(__('Mois en cours (%s) · Base SES 0,10 USD / 1 000 emails', 'wppknewsletter'), number_format_i18n($month_emails, 0)));
+        } else {
+            $month_emails = $this->get_current_month_email_total();
+            $estimated_cost = $this->format_estimated_ses_cost((float) $month_emails);
+            echo $this->render_stat_card(__('Emails envoyes', 'wppknewsletter'), (string) $summary['emails_total'], __('Historique interne du plugin', 'wppknewsletter'));
+            echo $this->render_stat_card(__('Campagnes', 'wppknewsletter'), (string) $summary['campaigns_total'], __('Declenchements enregistres localement', 'wppknewsletter'));
+            echo $this->render_stat_card(__('Dernier envoi', 'wppknewsletter'), get_option('wppk_newsletter_last_sent_date', 'jamais'), __('Derniere date de campagne', 'wppknewsletter'));
+            echo $this->render_stat_card(__('Cout estime', 'wppknewsletter'), $estimated_cost, sprintf(__('Mois en cours (%s) · Base SES 0,10 USD / 1 000 emails', 'wppknewsletter'), number_format_i18n($month_emails, 0)));
         }
         echo '</div>';
 
-        echo $this->render_line_chart_card(
-            'Evolution des abonnes',
-            'Progression cumulee sur la periode selectionnee',
-            $summary['follower_series']
-        );
-
         echo '<h3 class="wppk-stats-section-title">Sending messages</h3>';
-        echo '<div class="wppk-stat-grid" style="margin-top:8px;">';
-        echo $this->render_stat_card(__('Emails envoyes', 'wppknewsletter'), (string) $summary['emails_total'], __('Volume total sur la periode', 'wppknewsletter'));
-        echo $this->render_stat_card(__('Campagnes', 'wppknewsletter'), (string) $summary['campaigns_total'], __('Nombre de declenchements', 'wppknewsletter'));
-        echo $this->render_stat_card(__('Posts inclus', 'wppknewsletter'), (string) $summary['posts_total'], __('Contenus pousses dans les digest', 'wppknewsletter'));
-        echo '</div>';
+        if (!is_array($aws_ses_stats)) {
+            echo '<p class="description" style="margin:8px 0 0;">' . esc_html__('Stats AWS SES indisponibles. Renseigne la region, l’Access Key ID et la Secret Access Key dans Reglages > SMTP.', 'wppknewsletter') . '</p>';
+        }
 
         echo $this->render_line_chart_card(
             'Sending messages',
-            'Emails envoyes par periode',
-            $summary['sending_series']
+            is_array($aws_sending_data) ? 'Emails envoyes par AWS SES' : 'Emails envoyes par periode',
+            is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $summary['sending_series']
         );
 
-        if (!empty($summary['recent_logs'])) {
+        $recent_logs = is_array($aws_sending_data) ? ($aws_sending_data['recent_logs'] ?? []) : $summary['recent_logs'];
+        if (!empty($recent_logs)) {
             echo '<h3 class="wppk-stats-section-title">Historique recent</h3>';
             echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Emails envoyes</th><th>Posts inclus</th></tr></thead><tbody>';
-            foreach ($summary['recent_logs'] as $row) {
+            foreach ($recent_logs as $row) {
+                $date_only = !empty($row['sent_at']) ? wp_date('Y-m-d', strtotime((string) $row['sent_at'])) : '—';
                 echo '<tr>';
-                echo '<td>' . esc_html($row['sent_at']) . '</td>';
+                echo '<td>' . esc_html($date_only) . '</td>';
                 echo '<td>' . esc_html($row['emails_sent']) . '</td>';
                 echo '<td>' . esc_html($row['posts_count']) . '</td>';
                 echo '</tr>';
@@ -2330,6 +2941,39 @@ final class WPPK_Newsletter
         ];
     }
 
+    private function get_current_month_email_total(): int
+    {
+        $aws_sending_data = $this->get_aws_ses_sending_data('month');
+        if (is_array($aws_sending_data) && !empty($aws_sending_data['sending_series'])) {
+            $total = 0;
+            foreach ($aws_sending_data['sending_series'] as $point) {
+                $total += (int) ($point['value'] ?? 0);
+            }
+            return $total;
+        }
+
+        global $wpdb;
+        $log_table = $this->table_name(self::LOG_TABLE);
+        $tz = wp_timezone();
+        $start = (new DateTimeImmutable('now', $tz))
+            ->modify('first day of this month')
+            ->setTime(0, 0, 0)
+            ->setTimezone(new DateTimeZone('UTC'))
+            ->format('Y-m-d H:i:s');
+        $end = (new DateTimeImmutable('now', $tz))
+            ->setTime(23, 59, 59)
+            ->setTimezone(new DateTimeZone('UTC'))
+            ->format('Y-m-d H:i:s');
+
+        return (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COALESCE(SUM(emails_sent), 0) FROM {$log_table} WHERE sent_at >= %s AND sent_at <= %s",
+                $start,
+                $end
+            )
+        );
+    }
+
     private function build_periods(string $range): array
     {
         $periods = [];
@@ -2394,6 +3038,17 @@ final class WPPK_Newsletter
         }
 
         return $counts;
+    }
+
+    private function format_estimated_ses_cost(float $emails): string
+    {
+        $cost = max(0, $emails) * 0.10 / 1000;
+
+        if ($cost < 0.01) {
+            return '$' . number_format($cost, 4, '.', '');
+        }
+
+        return '$' . number_format($cost, 2, '.', '');
     }
 
     private function render_stats_switch(string $target, string $label, string $current, string $range): string
@@ -2584,31 +3239,32 @@ final class WPPK_Newsletter
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
         $charset = $wpdb->get_charset_collate();
-        $subscribers = $this->table_name(self::SUBSCRIBERS_TABLE);
         $logs = $this->table_name(self::LOG_TABLE);
-
-        dbDelta("CREATE TABLE {$subscribers} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            email VARCHAR(190) NOT NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'active',
-            unsubscribe_token VARCHAR(64) NOT NULL,
-            confirmation_token VARCHAR(64) NOT NULL DEFAULT '',
-            source VARCHAR(50) NOT NULL DEFAULT 'Your site',
-            signup_process VARCHAR(50) NOT NULL DEFAULT 'Form',
-            delivery_channel VARCHAR(50) NOT NULL DEFAULT 'Daily digest',
-            content_mode VARCHAR(50) NOT NULL DEFAULT 'Full stories',
-            preferred_hour TINYINT UNSIGNED NOT NULL DEFAULT 17,
-            confirmed TINYINT(1) NOT NULL DEFAULT 1,
-            created_at DATETIME NOT NULL,
-            confirmation_sent_at DATETIME NULL,
-            confirmed_at DATETIME NULL,
-            subscribed_at DATETIME NULL,
-            unsubscribed_at DATETIME NULL,
-            resubscribed_at DATETIME NULL,
-            PRIMARY KEY (id),
-            UNIQUE KEY email (email),
-            KEY status (status)
-        ) {$charset};");
+        foreach (['prod', 'dev'] as $audience) {
+            $subscribers = $this->get_subscribers_table_name($audience);
+            dbDelta("CREATE TABLE {$subscribers} (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                email VARCHAR(190) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'active',
+                unsubscribe_token VARCHAR(64) NOT NULL,
+                confirmation_token VARCHAR(64) NOT NULL DEFAULT '',
+                source VARCHAR(50) NOT NULL DEFAULT 'Your site',
+                signup_process VARCHAR(50) NOT NULL DEFAULT 'Form',
+                delivery_channel VARCHAR(50) NOT NULL DEFAULT 'Daily digest',
+                content_mode VARCHAR(50) NOT NULL DEFAULT 'Full stories',
+                preferred_hour TINYINT UNSIGNED NOT NULL DEFAULT 17,
+                confirmed TINYINT(1) NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL,
+                confirmation_sent_at DATETIME NULL,
+                confirmed_at DATETIME NULL,
+                subscribed_at DATETIME NULL,
+                unsubscribed_at DATETIME NULL,
+                resubscribed_at DATETIME NULL,
+                PRIMARY KEY (id),
+                UNIQUE KEY email (email),
+                KEY status (status)
+            ) {$charset};");
+        }
 
         dbDelta("CREATE TABLE {$logs} (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -2622,32 +3278,33 @@ final class WPPK_Newsletter
     private function migrate_subscribers_schema(): void
     {
         global $wpdb;
-        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
-
-        $columns = $wpdb->get_col("SHOW COLUMNS FROM {$table}", 0);
-        if (!is_array($columns) || !$columns) {
-            return;
-        }
-
-        $required = [
-            'confirmation_token' => "ALTER TABLE {$table} ADD COLUMN confirmation_token VARCHAR(64) NOT NULL DEFAULT '' AFTER unsubscribe_token",
-            'subscribed_at' => "ALTER TABLE {$table} ADD COLUMN subscribed_at DATETIME NULL AFTER created_at",
-            'confirmation_sent_at' => "ALTER TABLE {$table} ADD COLUMN confirmation_sent_at DATETIME NULL AFTER created_at",
-            'confirmed_at' => "ALTER TABLE {$table} ADD COLUMN confirmed_at DATETIME NULL AFTER confirmation_sent_at",
-            'unsubscribed_at' => "ALTER TABLE {$table} ADD COLUMN unsubscribed_at DATETIME NULL AFTER subscribed_at",
-            'resubscribed_at' => "ALTER TABLE {$table} ADD COLUMN resubscribed_at DATETIME NULL AFTER unsubscribed_at",
-        ];
-
-        foreach ($required as $column => $sql) {
-            if (!in_array($column, $columns, true)) {
-                $wpdb->query($sql);
+        foreach (['prod', 'dev'] as $audience) {
+            $table = $this->get_subscribers_table_name($audience);
+            $columns = $wpdb->get_col("SHOW COLUMNS FROM {$table}", 0);
+            if (!is_array($columns) || !$columns) {
+                continue;
             }
-        }
 
-        $wpdb->query("UPDATE {$table} SET confirmation_token = unsubscribe_token WHERE confirmation_token = ''");
-        $wpdb->query("UPDATE {$table} SET confirmed_at = created_at WHERE confirmed = 1 AND confirmed_at IS NULL");
-        $wpdb->query("UPDATE {$table} SET subscribed_at = created_at WHERE subscribed_at IS NULL");
-        $wpdb->query("UPDATE {$table} SET unsubscribed_at = created_at WHERE status = 'unsubscribed' AND unsubscribed_at IS NULL");
+            $required = [
+                'confirmation_token' => "ALTER TABLE {$table} ADD COLUMN confirmation_token VARCHAR(64) NOT NULL DEFAULT '' AFTER unsubscribe_token",
+                'subscribed_at' => "ALTER TABLE {$table} ADD COLUMN subscribed_at DATETIME NULL AFTER created_at",
+                'confirmation_sent_at' => "ALTER TABLE {$table} ADD COLUMN confirmation_sent_at DATETIME NULL AFTER created_at",
+                'confirmed_at' => "ALTER TABLE {$table} ADD COLUMN confirmed_at DATETIME NULL AFTER confirmation_sent_at",
+                'unsubscribed_at' => "ALTER TABLE {$table} ADD COLUMN unsubscribed_at DATETIME NULL AFTER subscribed_at",
+                'resubscribed_at' => "ALTER TABLE {$table} ADD COLUMN resubscribed_at DATETIME NULL AFTER unsubscribed_at",
+            ];
+
+            foreach ($required as $column => $sql) {
+                if (!in_array($column, $columns, true)) {
+                    $wpdb->query($sql);
+                }
+            }
+
+            $wpdb->query("UPDATE {$table} SET confirmation_token = unsubscribe_token WHERE confirmation_token = ''");
+            $wpdb->query("UPDATE {$table} SET confirmed_at = created_at WHERE confirmed = 1 AND confirmed_at IS NULL");
+            $wpdb->query("UPDATE {$table} SET subscribed_at = created_at WHERE subscribed_at IS NULL");
+            $wpdb->query("UPDATE {$table} SET unsubscribed_at = created_at WHERE status = 'unsubscribed' AND unsubscribed_at IS NULL");
+        }
     }
 
     private function update_subscriber_status(int $subscriber_id, string $status): void
@@ -2678,9 +3335,7 @@ final class WPPK_Newsletter
         } elseif ($status === 'pending') {
             $data['confirmed'] = 0;
             $data['confirmed_at'] = null;
-            $data['unsubscribed_at'] = null;
             $format[] = '%d';
-            $format[] = '%s';
             $format[] = '%s';
         } else {
             if (empty($current['subscribed_at'])) {
@@ -2691,8 +3346,6 @@ final class WPPK_Newsletter
                 $data['resubscribed_at'] = $now;
                 $format[] = '%s';
             }
-            $data['unsubscribed_at'] = null;
-            $format[] = '%s';
             if (empty($current['confirmed'])) {
                 $data['confirmed'] = 1;
                 $data['confirmed_at'] = $now;
@@ -2702,6 +3355,8 @@ final class WPPK_Newsletter
         }
 
         $wpdb->update($table, $data, ['id' => $subscriber_id], $format, ['%d']);
+        $email = $wpdb->get_var($wpdb->prepare("SELECT email FROM {$table} WHERE id = %d", $subscriber_id));
+        $this->log_event('subscriber', 'ok', sprintf('Statut abonné : %s → %s (%s)', (string) ($current['status'] ?? 'unknown'), $status, (string) $email));
     }
 
     private function get_subscriber_growth_data(string $range = 'day'): array
@@ -2785,12 +3440,62 @@ final class WPPK_Newsletter
             ['%s', '%d', '%s', '%s', '%s'],
             ['%d']
         );
+        $email = $wpdb->get_var($wpdb->prepare("SELECT email FROM {$table} WHERE id = %d", $subscriber_id));
+        $this->log_event('subscriber', 'ok', sprintf('Confirmation validée : %s', (string) $email));
     }
 
-    private function schedule_cron(): void
+    private function log_event(string $type, string $status, string $message): void
     {
-        if (!wp_next_scheduled(self::CRON_HOOK)) {
-            wp_schedule_event(time() + 300, 'wppk_hourly_digest', self::CRON_HOOK);
+        $logs = get_option(self::EVENT_LOG_OPTION, []);
+        if (!is_array($logs)) {
+            $logs = [];
+        }
+
+        array_unshift($logs, [
+            'time' => current_time('mysql'),
+            'type' => sanitize_key($type),
+            'status' => sanitize_key($status),
+            'message' => sanitize_text_field($message),
+        ]);
+
+        $logs = array_slice($logs, 0, 200);
+        update_option(self::EVENT_LOG_OPTION, $logs, false);
+    }
+
+    private function render_event_logs_panel(): string
+    {
+        $logs = get_option(self::EVENT_LOG_OPTION, []);
+        if (!is_array($logs) || !$logs) {
+            return '<p class="wppk-empty-copy">Aucun log pour le moment.</p>';
+        }
+
+        ob_start();
+        echo '<div class="wppk-event-logs"><table class="widefat striped"><thead><tr><th>Heure</th><th>Type</th><th>Statut</th><th>Message</th></tr></thead><tbody>';
+        foreach ($logs as $log) {
+            $status = (string) ($log['status'] ?? 'info');
+            echo '<tr>';
+            echo '<td>' . esc_html((string) ($log['time'] ?? '')) . '</td>';
+            echo '<td>' . esc_html(strtoupper((string) ($log['type'] ?? 'log'))) . '</td>';
+            echo '<td><span class="wppk-log-badge wppk-log-badge--' . esc_attr($status) . '">' . esc_html(strtoupper($status)) . '</span></td>';
+            echo '<td>' . esc_html((string) ($log['message'] ?? '')) . '</td>';
+            echo '</tr>';
+        }
+        echo '</tbody></table></div>';
+
+        return (string) ob_get_clean();
+    }
+
+    private function ensure_cron_schedule(): void
+    {
+        $scheduled = function_exists('wp_get_scheduled_event') ? wp_get_scheduled_event(self::CRON_HOOK) : null;
+
+        if ($scheduled && isset($scheduled->schedule) && $scheduled->schedule !== 'wppk_digest_check') {
+            wp_clear_scheduled_hook(self::CRON_HOOK);
+            $scheduled = null;
+        }
+
+        if (!$scheduled && !wp_next_scheduled(self::CRON_HOOK)) {
+            wp_schedule_event(time() + MINUTE_IN_SECONDS, 'wppk_digest_check', self::CRON_HOOK);
         }
     }
 
@@ -2809,6 +3514,7 @@ final class WPPK_Newsletter
             'sender_name' => get_bloginfo('name'),
             'sender_email' => get_option('admin_email'),
             'reply_to' => get_option('admin_email'),
+            'audience_mode' => 'prod',
             'accent_color' => '#2f80ed',
             'logo_url' => '',
             'email_layout' => 'reading_list',
@@ -2825,6 +3531,9 @@ final class WPPK_Newsletter
             'smtp_secure' => 'tls',
             'smtp_username' => '',
             'smtp_password' => '',
+            'aws_ses_region' => 'eu-north-1',
+            'aws_ses_access_key_id' => '',
+            'aws_ses_secret_access_key' => '',
         ];
     }
 
@@ -2906,6 +3615,28 @@ final class WPPK_Newsletter
     private function table_name(string $suffix): string
     {
         global $wpdb;
+        if ($suffix === self::SUBSCRIBERS_TABLE) {
+            return $this->get_subscribers_table_name();
+        }
+        return $wpdb->prefix . $suffix;
+    }
+
+    private function get_active_audience(): string
+    {
+        $settings = $this->get_settings();
+        return $this->sanitize_audience_mode((string) ($settings['audience_mode'] ?? 'prod'));
+    }
+
+    private function is_digest_paused(): bool
+    {
+        return (bool) get_option('wppk_newsletter_paused', 0);
+    }
+
+    private function get_subscribers_table_name(?string $audience = null): string
+    {
+        global $wpdb;
+        $mode = $this->sanitize_audience_mode((string) ($audience ?? $this->get_active_audience()));
+        $suffix = self::SUBSCRIBERS_TABLE . ($mode === 'dev' ? '_dev' : '');
         return $wpdb->prefix . $suffix;
     }
 }

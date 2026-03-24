@@ -41,6 +41,21 @@ body.toplevel_page_wppk-newsletter #wpfooter {
   min-width: 0;
 }
 
+.wppk-admin-audience-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
 .wppk-topbar__nav {
   display: flex;
   align-items: center;
@@ -117,6 +132,50 @@ body.toplevel_page_wppk-newsletter #wpfooter {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 18px;
+}
+
+.wppk-dashboard-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.wppk-dashboard-hero-form {
+  margin: 0;
+}
+
+.wppk-event-logs {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid #eef2f4;
+  border-radius: 18px;
+}
+
+.wppk-log-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.wppk-log-badge--ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.wppk-log-badge--warn,
+.wppk-log-badge--skip {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.wppk-log-badge--error {
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 .wppk-panel__title {
@@ -653,6 +712,36 @@ body.toplevel_page_wppk-newsletter #wpfooter {
 .wppk-subscriber-form--inline .button,
 .wppk-subscriber-form .button {
   min-width: 150px;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: 12px;
+  background: #00b65e;
+  border-color: #00b65e;
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.wppk-subscriber-form--inline .button:hover,
+.wppk-subscriber-form .button:hover,
+.wppk-subscriber-form--inline .button:focus,
+.wppk-subscriber-form .button:focus {
+  background: #00a052;
+  border-color: #00a052;
+  color: #ffffff;
+}
+
+.wppk-subscriber-form--inline .wppk-button-danger.button,
+.wppk-subscriber-form .wppk-button-danger.button {
+  background: #dc2626;
+  border-color: #dc2626;
+}
+
+.wppk-subscriber-form--inline .wppk-button-danger.button:hover,
+.wppk-subscriber-form .wppk-button-danger.button:hover,
+.wppk-subscriber-form--inline .wppk-button-danger.button:focus,
+.wppk-subscriber-form .wppk-button-danger.button:focus {
+  background: #b91c1c;
+  border-color: #b91c1c;
 }
 
 .wppk-subscriber-form__grid {
@@ -722,8 +811,8 @@ body.toplevel_page_wppk-newsletter #wpfooter {
   min-height: 32px;
   padding: 0 12px;
   border-radius: 10px;
-  background: #f8fafc;
-  color: #0f172a;
+  background: #00b65e;
+  color: #ffffff;
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
@@ -1318,7 +1407,7 @@ body.toplevel_page_wppk-newsletter #wpfooter {
 
 .wppk-dashboard-card--test {
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 3;
 }
 
 .wppk-dashboard-card--charts {
@@ -1333,7 +1422,7 @@ body.toplevel_page_wppk-newsletter #wpfooter {
 
 .wppk-dashboard-card--preview {
   grid-column: 1;
-  grid-row: 3;
+  grid-row: 2;
 }
 
 .wppk-dashboard-chart-grid {
@@ -1455,6 +1544,7 @@ body.toplevel_page_wppk-newsletter #wpfooter {
   .wppk-dashboard-card--test,
   .wppk-dashboard-card--charts,
   .wppk-dashboard-card--subscribers,
+  .wppk-dashboard-card--preview,
   .wppk-dashboard-card--posts {
     grid-column: auto;
     grid-row: auto;
