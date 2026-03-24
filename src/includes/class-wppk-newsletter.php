@@ -370,12 +370,16 @@ final class WPPK_Newsletter
         $recipient = sanitize_email(wp_unslash($_POST['test_recipient'] ?? ''));
         $digest_window = $this->sanitize_test_digest_window(wp_unslash($_POST['digest_window'] ?? 'today'));
         $test_layout = $this->sanitize_email_layout(wp_unslash($_POST['test_email_layout'] ?? $settings['email_layout']));
+        $return_tab = sanitize_key(wp_unslash($_POST['return_tab'] ?? 'settings'));
+        if (!in_array($return_tab, ['dashboard', 'settings'], true)) {
+            $return_tab = 'settings';
+        }
         if (!$recipient) {
             $recipient = $settings['preview_email'] ?: get_option('admin_email');
         }
         $args = [
             'page' => 'wppk-newsletter',
-            'tab' => 'settings',
+            'tab' => $return_tab,
         ];
 
         if (!$recipient || !is_email($recipient)) {
@@ -827,7 +831,6 @@ final class WPPK_Newsletter
         $settings = $this->get_settings();
         $stats = $this->get_stats();
         $posts = $this->get_daily_posts_overview();
-        $preview = $this->build_email_html($posts, $settings, $settings['preview_email'] ?: get_option('admin_email'));
         $tab = sanitize_key($_GET['tab'] ?? 'dashboard');
         $tabs = [
             'dashboard' => __('Dashboard', 'wppknewsletter'),
@@ -844,6 +847,10 @@ final class WPPK_Newsletter
         if (!isset($tabs[$tab])) {
             $tab = 'dashboard';
         }
+        $preview_layout = $this->sanitize_email_layout(wp_unslash($_GET['dashboard_preview_layout'] ?? $settings['email_layout']));
+        $preview_settings = $settings;
+        $preview_settings['email_layout'] = $preview_layout;
+        $preview = $this->build_email_html($posts, $preview_settings, $settings['preview_email'] ?: get_option('admin_email'));
         ?>
         <div class="wrap">
             <div class="wppk-admin-shell">
@@ -888,7 +895,7 @@ final class WPPK_Newsletter
 
                 <?php if ($tab === 'dashboard') : ?>
                 <div class="wppk-page-stack">
-                    <?php $this->render_dashboard_panel($settings, $stats, $posts); ?>
+                    <?php $this->render_dashboard_panel($settings, $stats, $posts, $preview, $preview_layout); ?>
                 </div>
                 <?php elseif ($tab === 'settings') : ?>
                 <div class="wppk-page-stack">
@@ -974,6 +981,7 @@ final class WPPK_Newsletter
                         </div>
                         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="wppk-inline-form">
                             <input type="hidden" name="action" value="wppk_send_test_digest">
+                            <input type="hidden" name="return_tab" value="settings">
                             <?php wp_nonce_field('wppk_send_test_digest'); ?>
                             <input
                                 type="email"
@@ -1192,10 +1200,15 @@ final class WPPK_Newsletter
         submit_button(__('Appliquer', 'wppknewsletter'), 'secondary', '', false);
         echo '<div class="wppk-bulkbar__count">' . esc_html(sprintf('%d abonnés', $total)) . '</div>';
         echo '</div>';
-        echo '<div class="wppk-table-shell"><table class="widefat striped wppk-table"><thead><tr><th><input type="checkbox" onclick="jQuery(\'.wppk-subscriber-check\').prop(\'checked\', this.checked)"></th><th>Email address</th><th>Subscribed</th><th>Unsubscribed</th><th>Resubscribed</th><th>Status</th><th>Source</th><th>Sign up process</th><th>Channels</th><th>Confirmation</th><th>Content</th><th>Email delivery time</th><th>Actions</th></tr></thead><tbody>';
+        echo '<div class="wppk-table-shell"><table class="widefat striped wppk-table"><thead><tr><th><input type="checkbox" onclick="jQuery(\'.wppk-subscriber-check\').prop(\'checked\', this.checked)"></th><th>Email address</th><th>Subscribed</th><th>Unsubscribed</th><th>Resubscribed</th><th>Status</th><th>Source</th><th>Channels</th><th>Confirmation</th><th>Content</th><th>Email delivery time</th><th>Actions</th></tr></thead><tbody>';
         foreach ($rows as $row) {
-            $status_style = $row['status'] === 'active' ? 'color:#1f9d55;font-weight:600;' : 'color:#7a7a7a;';
-            $confirmation = !empty($row['confirmed']) ? '✓' : 'Pending';
+            $status_badge = $row['status'] === 'active'
+                ? '<span class="wppk-status-badge is-active">🟢 Active</span>'
+                : '<span class="wppk-status-badge is-unsubscribed">🟠 Unsubscribed</span>';
+            $confirmation_badge = !empty($row['confirmed'])
+                ? '<span class="wppk-status-badge is-confirmed">✅ Confirmed</span>'
+                : '<span class="wppk-status-badge is-pending">🟡 Pending</span>';
+            $content_badge = '<span class="wppk-content-badge">' . esc_html($row['content_mode']) . '</span>';
             $delivery_time = sprintf('%02d:00', (int) $row['preferred_hour']);
             echo '<tr>';
             echo '<td><input type="checkbox" class="wppk-subscriber-check" name="subscriber_ids[]" value="' . esc_attr((string) $row['id']) . '"></td>';
@@ -1203,29 +1216,33 @@ final class WPPK_Newsletter
             echo '<td>' . esc_html($row['subscribed_at'] ?: $row['created_at']) . '</td>';
             echo '<td>' . esc_html($row['unsubscribed_at'] ?: '—') . '</td>';
             echo '<td>' . esc_html($row['resubscribed_at'] ?: '—') . '</td>';
-            echo '<td><span style="' . esc_attr($status_style) . '">' . esc_html(ucfirst($row['status'])) . '</span></td>';
+            echo '<td>' . $status_badge . '</td>';
             echo '<td>' . esc_html($row['source']) . '</td>';
-            echo '<td>' . esc_html($row['signup_process']) . '</td>';
             echo '<td>' . esc_html($row['delivery_channel']) . '</td>';
-            echo '<td>' . esc_html($confirmation) . '</td>';
-            echo '<td>' . esc_html($row['content_mode']) . '</td>';
+            echo '<td>' . $confirmation_badge . '</td>';
+            echo '<td>' . $content_badge . '</td>';
             echo '<td>' . esc_html($delivery_time) . '</td>';
-            echo '<td>' . $this->render_subscriber_actions((int) $row['id'], $row['status']) . '</td>';
+            echo '<td>' . $this->render_subscriber_actions((int) $row['id']) . '</td>';
             echo '</tr>';
-            if ($edit_id === (int) $row['id']) {
-                echo '<tr class="wppk-edit-row"><td colspan="13">';
-                $this->render_subscriber_edit_form($row);
-                echo '</td></tr>';
-            }
         }
         echo '</tbody></table></div></form>';
         echo $this->render_subscriber_pagination($page_num, $per_page, $total, $search, $status_filter, $channel_filter);
+        if ($edit_id) {
+            foreach ($rows as $row) {
+                if ((int) $row['id'] === $edit_id) {
+                    $this->render_subscriber_edit_drawer($row, $search, $status_filter, $channel_filter, $page_num, $per_page);
+                    break;
+                }
+            }
+        }
     }
 
-    private function render_dashboard_panel(array $settings, array $stats, array $posts): void
+    private function render_dashboard_panel(array $settings, array $stats, array $posts, string $preview, string $preview_layout): void
     {
         $recent_subscribers = $this->get_recent_subscribers(6);
         $test_recipient = $settings['preview_email'] ?: get_option('admin_email');
+        $growth = $this->get_subscriber_growth_data('day');
+        $sending_summary = $this->get_stats_dashboard_data('day');
 
         echo '<div class="wppk-dashboard-grid">';
 
@@ -1242,6 +1259,7 @@ final class WPPK_Newsletter
         echo '<div class="wppk-panel__header"><div><h2 class="wppk-panel__title">Envoyer un test</h2><p class="wppk-panel__copy">Déclenche uniquement un digest de test vers l’adresse de ton choix.</p></div></div>';
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="wppk-inline-form wppk-inline-form--stack">';
         echo '<input type="hidden" name="action" value="wppk_send_test_digest">';
+        echo '<input type="hidden" name="return_tab" value="dashboard">';
         wp_nonce_field('wppk_send_test_digest');
         echo '<input type="email" name="test_recipient" value="' . esc_attr($test_recipient) . '" placeholder="destinataire@test.com">';
         echo '<select name="digest_window">';
@@ -1249,13 +1267,35 @@ final class WPPK_Newsletter
             echo '<option value="' . esc_attr($window_key) . '">' . esc_html($window_label) . '</option>';
         }
         echo '</select>';
-        echo '<select name="test_email_layout">';
+        echo '<select name="test_email_layout" id="wppk-dashboard-test-layout">';
         foreach ($this->get_email_layout_options() as $layout_key => $layout_label) {
-            echo '<option value="' . esc_attr($layout_key) . '"' . selected($settings['email_layout'], $layout_key, false) . '>' . esc_html($layout_label) . '</option>';
+            echo '<option value="' . esc_attr($layout_key) . '"' . selected($preview_layout, $layout_key, false) . '>' . esc_html($layout_label) . '</option>';
         }
         echo '</select>';
         submit_button(__('Envoyer un digest de test', 'wppknewsletter'), 'primary', 'submit', false);
         echo '</form>';
+        echo '<script>document.addEventListener("DOMContentLoaded",function(){var s=document.getElementById("wppk-dashboard-test-layout");if(!s)return;s.addEventListener("change",function(){var u=new URL(window.location.href);u.searchParams.set("page","wppk-newsletter");u.searchParams.set("tab","dashboard");u.searchParams.set("dashboard_preview_layout",s.value);window.location=u.toString();});});</script>';
+        echo '</section>';
+
+        echo '<section class="wppk-panel wppk-dashboard-card wppk-dashboard-card--charts">';
+        echo '<div class="wppk-panel__header"><div><h2 class="wppk-panel__title">Charts</h2><p class="wppk-panel__copy">Les métriques clés visibles directement depuis le dashboard.</p></div></div>';
+        echo '<div class="wppk-dashboard-chart-grid">';
+        echo $this->render_dual_line_chart_card(
+            'Progression des abonnes',
+            'Volume cumulé sur les 30 derniers jours',
+            $growth['subscribed_series'] ?? [],
+            $growth['unsubscribed_series'] ?? [],
+            'Actifs',
+            'Désinscrits',
+            'wppk-chart-card--mini'
+        );
+        echo $this->render_line_chart_card(
+            'Sending messages',
+            'Emails envoyés par période',
+            $sending_summary['sending_series'],
+            'wppk-chart-card--mini'
+        );
+        echo '</div>';
         echo '</section>';
 
         echo '<section class="wppk-panel wppk-dashboard-card wppk-dashboard-card--posts">';
@@ -1313,6 +1353,11 @@ final class WPPK_Newsletter
         }
         echo '</section>';
 
+        echo '<section class="wppk-panel wppk-dashboard-card wppk-dashboard-card--preview">';
+        echo '<div class="wppk-panel__header"><div><h2 class="wppk-panel__title">Preview email</h2><p class="wppk-panel__copy">La preview suit le template sélectionné dans le bloc de test.</p></div></div>';
+        echo '<div class="wppk-preview-shell"><div class="wppk-preview-scale">' . wp_kses_post($preview) . '</div></div>';
+        echo '</section>';
+
         echo '</div>';
     }
 
@@ -1331,7 +1376,7 @@ final class WPPK_Newsletter
         ) ?: [];
     }
 
-    private function render_subscriber_actions(int $subscriber_id, string $status): string
+    private function render_subscriber_actions(int $subscriber_id): string
     {
         $edit_url = add_query_arg(
             [
@@ -1345,29 +1390,42 @@ final class WPPK_Newsletter
         ?>
         <div class="wppk-row-actions">
             <a href="<?php echo esc_url($edit_url); ?>" class="button button-secondary">Editer</a>
-            <?php if ($status === 'active') : ?>
-                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="wppk-inline-form">
-                    <input type="hidden" name="action" value="wppk_subscriber_action">
-                    <input type="hidden" name="subscriber_id" value="<?php echo esc_attr((string) $subscriber_id); ?>">
-                    <input type="hidden" name="subscriber_action_name" value="deactivate">
-                    <?php wp_nonce_field('wppk_subscriber_action'); ?>
-                    <button type="submit" class="button button-secondary">Desactiver</button>
-                </form>
-            <?php else : ?>
-                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="wppk-inline-form">
-                    <input type="hidden" name="action" value="wppk_subscriber_action">
-                    <input type="hidden" name="subscriber_id" value="<?php echo esc_attr((string) $subscriber_id); ?>">
-                    <input type="hidden" name="subscriber_action_name" value="activate">
-                    <?php wp_nonce_field('wppk_subscriber_action'); ?>
-                    <button type="submit" class="button button-secondary">Reactiver</button>
-                </form>
-            <?php endif; ?>
         </div>
         <?php
         return (string) ob_get_clean();
     }
 
-    private function render_subscriber_edit_form(array $row): void
+    private function render_subscriber_edit_drawer(array $row, string $search, string $status_filter, string $channel_filter, int $page_num, int $per_page): void
+    {
+        $cancel_url = add_query_arg(
+            [
+                'page' => 'wppk-newsletter',
+                'tab' => 'subscribers',
+                'subscriber_s' => $search,
+                'subscriber_status' => $status_filter,
+                'subscriber_channel' => $channel_filter,
+                'subscriber_page_num' => $page_num,
+                'subscriber_per_page' => $per_page,
+            ],
+            admin_url('admin.php')
+        );
+        ?>
+        <div class="wppk-drawer-backdrop">
+            <a class="wppk-drawer-backdrop__scrim" href="<?php echo esc_url($cancel_url); ?>" aria-label="Fermer l’édition"></a>
+            <aside class="wppk-subscriber-drawer" aria-label="Édition de l’abonné">
+                <div class="wppk-subscriber-drawer__header">
+                    <div>
+                        <h3 class="wppk-subscriber-drawer__title">Éditer l’abonné</h3>
+                        <p class="wppk-subscriber-drawer__copy"><?php echo esc_html($row['email']); ?></p>
+                    </div>
+                </div>
+                <?php $this->render_subscriber_edit_form($row, $cancel_url); ?>
+            </aside>
+        </div>
+        <?php
+    }
+
+    private function render_subscriber_edit_form(array $row, string $cancel_url = ''): void
     {
         ?>
         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="wppk-edit-form">
@@ -1384,6 +1442,9 @@ final class WPPK_Newsletter
             </div>
             <div class="wppk-edit-actions">
                 <?php submit_button(__('Sauvegarder les changements', 'wppknewsletter'), 'primary', '', false); ?>
+                <?php if ($cancel_url !== '') : ?>
+                    <a href="<?php echo esc_url($cancel_url); ?>" class="button button-secondary">Annuler</a>
+                <?php endif; ?>
             </div>
         </form>
         <?php
@@ -1674,13 +1735,12 @@ final class WPPK_Newsletter
 
     private function get_daily_posts_overview(): array
     {
-        $settings = $this->get_settings();
         $digest_context = $this->get_digest_context('today');
 
         $query = new WP_Query([
             'post_type' => 'post',
             'post_status' => ['publish', 'future'],
-            'posts_per_page' => (int) $settings['posts_per_digest'],
+            'posts_per_page' => -1,
             'date_query' => [[
                 'after' => $digest_context['start'],
                 'before' => $digest_context['end'],
@@ -2206,9 +2266,10 @@ final class WPPK_Newsletter
         return '<div class="' . esc_attr($classes) . '"><div class="wppk-channel-card__label">' . esc_html($label) . '</div><div class="wppk-channel-card__count">(' . esc_html((string) $count) . ')</div></div>';
     }
 
-    private function render_line_chart_card(string $title, string $caption, array $series): string
+    private function render_line_chart_card(string $title, string $caption, array $series, string $card_class = ''): string
     {
-        return '<div class="wppk-chart-card"><div class="wppk-chart-card__header"><div><h3 class="wppk-stats-section-title" style="margin:0;">' . esc_html($title) . '</h3><p class="wppk-chart-card__caption">' . esc_html($caption) . '</p></div></div>' . $this->render_svg_line_chart($series) . '</div>';
+        $classes = trim('wppk-chart-card ' . $card_class);
+        return '<div class="' . esc_attr($classes) . '"><div class="wppk-chart-card__header"><div><h3 class="wppk-stats-section-title" style="margin:0;">' . esc_html($title) . '</h3><p class="wppk-chart-card__caption">' . esc_html($caption) . '</p></div></div>' . $this->render_svg_line_chart($series, $card_class === 'wppk-chart-card--mini') . '</div>';
     }
 
     private function render_dual_line_chart_card(string $title, string $caption, array $primarySeries, array $secondarySeries, string $primaryLabel, string $secondaryLabel, string $card_class = ''): string
@@ -2218,18 +2279,18 @@ final class WPPK_Newsletter
         return '<div class="' . esc_attr($classes) . '"><div class="wppk-chart-card__header"><div><h3 class="wppk-stats-section-title" style="margin:0;">' . esc_html($title) . '</h3><p class="wppk-chart-card__caption">' . esc_html($caption) . '</p></div>' . $legend . '</div>' . $this->render_svg_dual_line_chart($primarySeries, $secondarySeries, $card_class === 'wppk-chart-card--mini') . '</div>';
     }
 
-    private function render_svg_line_chart(array $series): string
+    private function render_svg_line_chart(array $series, bool $compact = false): string
     {
         if (!$series) {
             return '<p>Aucune donnee.</p>';
         }
 
         $width = 960;
-        $height = 320;
+        $height = $compact ? 190 : 320;
         $paddingLeft = 48;
         $paddingRight = 16;
-        $paddingTop = 16;
-        $paddingBottom = 40;
+        $paddingTop = $compact ? 10 : 16;
+        $paddingBottom = $compact ? 28 : 40;
         $plotWidth = $width - $paddingLeft - $paddingRight;
         $plotHeight = $height - $paddingTop - $paddingBottom;
         $values = array_map(static fn($point) => (int) $point['value'], $series);

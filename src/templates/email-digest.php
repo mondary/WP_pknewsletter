@@ -99,7 +99,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                 </div>
                                 <?php if ($featured_data['thumb']) : ?>
                                     <div style="margin-bottom:18px;border-radius:4px;overflow:hidden;border:1px solid #f1ede5;">
-                                        <img src="<?php echo esc_url($featured_data['thumb']); ?>" alt="" style="display:block;width:100%;height:auto;max-height:360px;object-fit:cover;">
+                                        <img src="<?php echo esc_url($featured_data['thumb']); ?>" alt="" style="display:block;width:100%;height:auto;max-height:360px;object-fit:cover;object-position:top center;">
                                     </div>
                                 <?php endif; ?>
                                 <p style="margin:0 0 22px 0;font-size:16px;line-height:1.8;color:<?php echo esc_attr($soft_text); ?>;">
@@ -135,7 +135,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                         <tr>
                                                             <?php if ($item['thumb']) : ?>
                                                                 <td width="88" valign="top" style="padding-right:14px;">
-                                                                    <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:88px;height:88px;border-radius:3px;object-fit:cover;">
+                                                                    <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:88px;height:88px;border-radius:3px;object-fit:cover;object-position:top center;">
                                                                 </td>
                                                             <?php endif; ?>
                                                             <td valign="top">
@@ -165,7 +165,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                     Daily Briefing
                                 </div>
                                 <h1 style="margin:0 0 10px 0;font-size:32px;line-height:1.08;font-weight:800;color:<?php echo esc_attr($dark_panel_text); ?>;"><?php echo esc_html($digest_context['header_title']); ?></h1>
-                                <p style="margin:0;font-size:15px;line-height:1.7;color:<?php echo esc_attr($dark_panel_text); ?>;opacity:.82;"><?php echo esc_html(wp_strip_all_tags($settings['intro_text'])); ?></p>
+                                <p style="margin:0;font-size:15px;line-height:1.7;color:<?php echo esc_attr($dark_panel_text); ?>;opacity:.82;">Une lecture rapide, pensée comme un brief éditorial : les sujets à retenir, les liens à ouvrir, et l’essentiel sans bruit.</p>
                             </td>
                         </tr>
                         <?php foreach ($posts as $post) : ?>
@@ -206,7 +206,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                         <td width="50%" valign="top" style="padding:0 8px 16px 0;">
                                             <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:<?php echo esc_attr($panel_bg); ?>;border:1px solid <?php echo esc_attr($panel_border); ?>;border-radius:22px;overflow:hidden;height:100%;">
                                                 <?php if ($item['thumb']) : ?>
-                                                    <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:180px;object-fit:cover;"></td></tr>
+                                                    <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:180px;object-fit:cover;object-position:top center;"></td></tr>
                                                 <?php endif; ?>
                                                 <tr>
                                                     <td style="padding:18px;">
@@ -248,7 +248,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                             <tr>
                                                 <?php if ($item['thumb']) : ?>
                                                     <td width="220" valign="top" style="background:#f3f4f6;">
-                                                        <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:220px;height:220px;object-fit:cover;">
+                                                        <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:220px;height:220px;object-fit:cover;object-position:top center;">
                                                     </td>
                                                 <?php endif; ?>
                                                 <td valign="top" style="padding:18px 20px;">
@@ -273,7 +273,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                         <td style="padding-top:6px;">
                                             <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #ece8df;border-radius:26px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.04);">
                                                 <?php if ($item['thumb']) : ?>
-                                                    <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:auto;max-height:340px;object-fit:cover;"></td></tr>
+                                                    <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:auto;max-height:340px;object-fit:cover;object-position:top center;"></td></tr>
                                                 <?php endif; ?>
                                                 <tr><td style="padding:24px;">
                                                     <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;"><?php echo esc_html($item['label']); ?></div>
@@ -304,12 +304,12 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                             <?php elseif ($layout === 'compact') : ?>
                                 <tr>
                                     <td style="padding-top:10px;">
-                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;">
+                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;">
                                             <tr>
-                                                <td style="padding:14px 16px;">
+                                                <td>
                                                     <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                                                         <tr>
-                                                            <td valign="top">
+                                                            <td valign="top" style="padding:14px 16px;">
                                                                 <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;"><?php echo esc_html($item['label']); ?></div>
                                                                 <div style="margin:0 0 6px 0;font-size:17px;line-height:1.35;font-weight:800;color:#111827;">
                                                                     <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
@@ -317,8 +317,8 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                                 <div style="font-size:13px;line-height:1.6;color:#6b7280;"><?php echo esc_html(wp_trim_words($item['excerpt'], 18)); ?></div>
                                                             </td>
                                                             <?php if ($item['thumb']) : ?>
-                                                                <td width="110" valign="top" style="padding-left:12px;">
-                                                                    <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:96px;height:96px;border-radius:3px;object-fit:cover;">
+                                                                <td width="144" valign="top" style="background:#f3f4f6;">
+                                                                    <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:144px;height:118px;object-fit:cover;object-position:top center;">
                                                                 </td>
                                                             <?php endif; ?>
                                                         </tr>
@@ -333,7 +333,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                     <td style="padding-top:14px;">
                                         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #ece8df;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.04);">
                                             <?php if ($item['thumb']) : ?>
-                                                <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:auto;max-height:280px;object-fit:cover;"></td></tr>
+                                                <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:auto;max-height:280px;object-fit:cover;object-position:top center;"></td></tr>
                                             <?php endif; ?>
                                             <tr>
                                                 <td style="padding:22px;">
