@@ -2,7 +2,9 @@
 
 # Local editor / tooling
 .vscode/
+.vscode
 .skills/
+.skills
 
 # Local secrets and credentials
 secrets/
