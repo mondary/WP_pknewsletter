@@ -331,18 +331,30 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                             <?php else : ?>
                                 <tr>
                                     <td style="padding-top:14px;">
-                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #ece8df;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.04);">
+                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #ece8df;border-radius:20px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.04);">
+                                            <tr>
+                                                <td style="height:4px;background:<?php echo esc_attr($accent); ?>;"></td>
+                                            </tr>
                                             <?php if ($item['thumb']) : ?>
-                                                <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:auto;max-height:280px;object-fit:cover;object-position:top center;"></td></tr>
+                                                <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:240px;object-fit:cover;object-position:top center;"></td></tr>
                                             <?php endif; ?>
                                             <tr>
-                                                <td style="padding:22px;">
-                                                    <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;"><?php echo esc_html($item['label']); ?></div>
-                                                    <div style="margin:0 0 10px 0;font-size:26px;line-height:1.18;font-weight:800;color:#111827;">
+                                                <td style="padding:22px 22px 20px;">
+                                                    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;">
+                                                        <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;"><?php echo esc_html($item['label']); ?></div>
+                                                        <div style="font-size:12px;line-height:1.4;color:#6b7280;"><?php echo esc_html($item['date']); ?></div>
+                                                    </div>
+                                                    <div style="margin:0 0 10px 0;font-size:24px;line-height:1.2;font-weight:800;color:#111827;">
                                                         <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
                                                     </div>
-                                                    <div style="margin:0 0 18px 0;font-size:15px;line-height:1.75;color:#4b5563;"><?php echo esc_html($item['excerpt']); ?></div>
-                                                    <a href="<?php echo esc_url($item['permalink']); ?>" style="display:inline-block;background:<?php echo esc_attr($accent); ?>;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:8px;font-size:14px;font-weight:700;">Lire l'article</a>
+                                                    <div style="margin:0 0 18px 0;font-size:14px;line-height:1.75;color:#4b5563;"><?php echo esc_html(wp_trim_words($item['excerpt'], 22)); ?></div>
+                                                    <table role="presentation" cellspacing="0" cellpadding="0">
+                                                        <tr>
+                                                            <td style="border-radius:999px;background:#f8fafc;border:1px solid #e5e7eb;">
+                                                                <a href="<?php echo esc_url($item['permalink']); ?>" style="display:inline-block;padding:10px 14px;color:#111827;text-decoration:none;font-size:13px;font-weight:700;">Ouvrir la carte</a>
+                                                            </td>
+                                                        </tr>
+                                                    </table>
                                                 </td>
                                             </tr>
                                         </table>
@@ -369,7 +381,8 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                     <td style="padding:20px 22px;text-align:center;font-size:13px;line-height:1.8;color:<?php echo esc_attr($muted); ?>;">
                                         <?php echo wp_kses_post(wpautop($settings['footer_text'])); ?>
                                         <?php if ($unsubscribe_url) : ?>
-                                            <p style="margin:12px 0 0 0;"><a href="<?php echo esc_url($unsubscribe_url); ?>" style="color:<?php echo esc_attr($muted); ?>;text-decoration:underline;">Se desinscrire</a></p>
+                                            <p style="margin:12px 0 0 0;">Si tu ne souhaites plus recevoir ce digest :</p>
+                                            <p style="margin:10px 0 0 0;"><a href="<?php echo esc_url($unsubscribe_url); ?>" style="display:inline-block;padding:10px 14px;border:1px solid <?php echo esc_attr($panel_border); ?>;border-radius:999px;background:#ffffff;color:<?php echo esc_attr($muted); ?>;text-decoration:none;font-weight:700;">Se desinscrire</a></p>
                                         <?php endif; ?>
                                         <p style="margin:10px 0 0 0;"><?php echo esc_html($recipient); ?></p>
                                     </td>
