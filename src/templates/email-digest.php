@@ -219,13 +219,13 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                             <tr>
                                                                 <td valign="top" style="height:78px;padding:0 0 8px;">
                                                                     <div style="margin:0;font-size:20px;line-height:1.25;font-weight:800;color:#111827;">
-                                                                        <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
+                                                                        <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html(wp_trim_words($item['title'], 11, '…')); ?></a>
                                                                     </div>
                                                                 </td>
                                                             </tr>
                                                             <tr>
                                                                 <td valign="top" style="height:60px;font-size:14px;line-height:1.7;color:#4b5563;">
-                                                                    <?php echo esc_html(wp_trim_words($item['excerpt'], 16)); ?>
+                                                                    <?php echo esc_html(wp_trim_words($item['excerpt'], 12, '…')); ?>
                                                                 </td>
                                                             </tr>
                                                         </table>

@@ -52,13 +52,16 @@ body.toplevel_page_wppk-newsletter #wpfooter {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   min-height: 40px;
-  padding: 0 16px;
+  padding: 0 8px;
   color: #64748b;
   text-decoration: none;
   font-size: 13px;
   font-weight: 700;
+  border: 0;
   border-bottom: 2px solid transparent;
+  transition: border-bottom-color .18s ease, color .18s ease;
 }
 
 .wppk-topbar__link:hover,
@@ -66,6 +69,13 @@ body.toplevel_page_wppk-newsletter #wpfooter {
   color: #0f172a;
   outline: none;
   box-shadow: none;
+}
+
+.wppk-topbar__icon {
+  width: 18px;
+  height: 18px;
+  font-size: 18px;
+  line-height: 18px;
 }
 
 .wppk-topbar__link.is-active {
@@ -202,16 +212,19 @@ body.toplevel_page_wppk-newsletter #wpfooter {
 
 .wppk-preview-shell {
   max-width: 980px;
-  padding: 24px;
+  padding: 18px;
   border: 1px solid #eef2f4;
   border-radius: 24px;
-  background: #ffffff;
+  background: #f8fafc;
 }
 
-.wppk-preview-scale {
-  width: 117.65%;
-  transform: scale(.85);
-  transform-origin: top left;
+.wppk-preview-frame {
+  display: block;
+  width: 100%;
+  min-height: 1100px;
+  border: 0;
+  border-radius: 18px;
+  background: #ffffff;
 }
 
 .wppk-stats-toolbar {
@@ -777,33 +790,50 @@ body.toplevel_page_wppk-newsletter #wpfooter {
   min-height: 110px;
 }
 
+.wppk-settings-form {
+  max-width: 1120px;
+}
+
 .wppk-settings-sections {
   display: grid;
-  gap: 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
 }
 
 .wppk-settings-section {
-  padding: 20px;
+  padding: 16px 18px;
   border: 1px solid #eef2f4;
-  border-radius: 22px;
+  border-radius: 18px;
   background: #ffffff;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.03);
+}
+
+.wppk-settings-section--smtp {
+  grid-column: 1 / -1;
 }
 
 .wppk-settings-section__header {
-  margin-bottom: 14px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f1f5f9;
 }
 
 .wppk-settings-section__title {
   margin: 0;
   color: #0f172a;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
 }
 
 .wppk-settings-grid {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.wppk-settings-section--smtp .wppk-settings-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
 }
 
 .wppk-drawer-backdrop {
@@ -934,27 +964,54 @@ body.toplevel_page_wppk-newsletter #wpfooter {
 }
 
 .wppk-field-group {
-  padding: 16px;
+  padding: 14px;
   border: 1px solid #eef2f4;
-  border-radius: 18px;
-  background: #ffffff;
+  border-radius: 16px;
+  background: #fafafa;
 }
 
 .wppk-field-group__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: 12px;
+}
+
+.wppk-settings-grid .wppk-field--span-2,
+.wppk-settings-grid .wppk-field--span-3 {
+  grid-column: 1 / -1;
+}
+
+.wppk-settings-form .description {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.wppk-settings-guide {
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #f8fafc;
 }
 
 .wppk-logo-preview {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 132px;
   min-height: 72px;
   padding: 12px;
   border: 1px solid #eef2f4;
   border-radius: 16px;
   background: #ffffff;
+}
+
+.wppk-logo-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
 }
 
 .wppk-logo-preview img {
@@ -970,6 +1027,9 @@ body.toplevel_page_wppk-newsletter #wpfooter {
 .wppk-toolbar .button-primary {
   background: #00b65e;
   border-color: #00b65e;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: 12px;
 }
 
 .wppk-settings-form .button-primary:hover,
@@ -1152,11 +1212,6 @@ body.toplevel_page_wppk-newsletter #wpfooter {
   grid-row: 3;
 }
 
-.wppk-dashboard-card--posts {
-  grid-column: 2;
-  grid-row: 3;
-}
-
 .wppk-dashboard-card--preview {
   grid-column: 1 / -1;
   grid-row: 4;
@@ -1164,7 +1219,7 @@ body.toplevel_page_wppk-newsletter #wpfooter {
 
 .wppk-dashboard-chart-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -1358,6 +1413,18 @@ body.toplevel_page_wppk-newsletter #wpfooter {
   }
 
   .wppk-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wppk-settings-sections {
+    grid-template-columns: 1fr;
+  }
+
+  .wppk-settings-section--smtp .wppk-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wppk-logo-field {
     grid-template-columns: 1fr;
   }
 
