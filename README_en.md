@@ -5,16 +5,17 @@
 ✨ WordPress plugin to manage a daily editorial newsletter with subscriber management, HTML digest rendering, subscription history, and built-in SMTP delivery.
 
 ## ✅ Features
-- Dedicated admin dashboard with `Dashboard`, `Subscribers`, `Today posts`, `Statistics`, and `Settings`
+- Dedicated admin dashboard with `Dashboard`, `Subscribers`, `Statistics`, and `Settings`
 - Frontend subscription form via shortcode
 - Subscriber management with manual add, CSV import/export, filters, pagination, and row actions
 - Preserved subscription, unsubscribe, and resubscribe history
 - HTML email digest with multiple layouts and visual themes
 - Email preview directly in the admin
-- Test digest sending to a dedicated email address
+- Test digest sending to a dedicated email address, with day selection (`today` / `yesterday`) and layout selection
 - SMTP built directly into the plugin
 - Token-based unsubscribe links
 - Sending stats and subscriber growth charts
+- Dashboard `Posts du jour` preview showing both published and scheduled posts for the day, with a visual scheduled flag
 
 ## 🧠 Usage
 The plugin is meant to run an editorial digest newsletter from WordPress without relying on a third-party SaaS for the management UI.
@@ -66,8 +67,16 @@ Main files:
 - `src/assets/form.css`
 
 To package it:
-- use a build archive stored in `extensions/`
+- run:
+
+```bash
+scripts/build-plugin.sh
+```
+
+- pick up the generated archive from `extensions/`
 - upload the archive from `Plugins > Add New > Upload Plugin`
+
+The build script generates a zip with a stable root directory `WPpknewsletter/`, so WordPress replaces the installed plugin instead of creating a sibling plugin folder.
 
 ## 🧪 Installation
 1. Upload the plugin into WordPress.
@@ -102,9 +111,14 @@ Amazon SES example:
 - security: `TLS`
 
 ## 🧾 Changelog
-- `1.0.7`: non-destructive subscriber history, subscriber/unsubscriber chart, AWS free plan reminder, compact stats cards
-- `1.0.6`: fixed the `List + thumbnails` layout
-- `1.0.5`: subscriber pagination and per-page selector
+- `1.18`: larger email header logo, lighter thumbnail radius, SMTP password no longer prefilled in admin
+- `1.17`: email visual adjustments
+- `1.16`: subscriber chart switched to cumulative volume
+- `1.15`: subscriber chart compacted
+- `1.14`: `Send test` card moved above `Posts du jour` in the dashboard
+- `1.13`: removed the standalone `Posts du jour` tab, stronger orange scheduled flag, stabilized zip packaging
+- `1.12`: `Posts du jour` preview now includes published + scheduled posts with scheduled time
+- `1.11`: versioning normalized to the `1.x` format
 - `1.0.0`: first stable usable version
 
 ## 🔗 Links

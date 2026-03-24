@@ -13,6 +13,12 @@ $soft_text = $theme['soft_text'] ?? '#4b5563';
 $hero_bg = $theme['hero_bg'] ?? '#ffffff';
 $dark_panel_bg = $theme['dark_panel_bg'] ?? '#111827';
 $dark_panel_text = $theme['dark_panel_text'] ?? '#f9fafb';
+$digest_context = $digest_context ?? [
+    'timestamp' => current_time('timestamp'),
+    'header_title' => 'Le digest du jour',
+    'selection_title' => 'Sélection du jour',
+    'empty_text' => 'Aucun nouvel article aujourd\'hui.',
+];
 $featured = $posts[0] ?? null;
 $rest_posts = $featured ? array_slice($posts, 1) : [];
 
@@ -56,8 +62,8 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                         <table role="presentation" cellspacing="0" cellpadding="0">
                                             <tr>
                                                 <?php if (!empty($settings['logo_url'])) : ?>
-                                                    <td style="padding-right:12px;" valign="middle">
-                                                        <img src="<?php echo esc_url($settings['logo_url']); ?>" alt="<?php echo esc_attr($site_name); ?>" style="display:block;width:40px;height:40px;border-radius:999px;object-fit:cover;">
+                                                    <td style="padding-right:14px;" valign="middle">
+                                                        <img src="<?php echo esc_url($settings['logo_url']); ?>" alt="<?php echo esc_attr($site_name); ?>" style="display:block;width:60px;height:60px;border-radius:999px;object-fit:cover;">
                                                     </td>
                                                 <?php endif; ?>
                                                 <td valign="middle">
@@ -65,7 +71,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                         <?php echo esc_html($site_name); ?>
                                                     </div>
                                                     <div style="margin-top:6px;font-size:12px;line-height:1.4;color:<?php echo esc_attr($muted); ?>;">
-                                                        <?php echo esc_html(wp_date('d F Y')); ?>
+                                                        <?php echo esc_html(wp_date('d F Y', $digest_context['timestamp'])); ?>
                                                     </div>
                                                 </td>
                                             </tr>
@@ -92,7 +98,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                     Par <strong style="color:<?php echo esc_attr($text); ?>;"><?php echo esc_html($settings['sender_name']); ?></strong> le <?php echo esc_html($featured_data['date']); ?>
                                 </div>
                                 <?php if ($featured_data['thumb']) : ?>
-                                    <div style="margin-bottom:18px;border-radius:8px;overflow:hidden;border:1px solid #f1ede5;">
+                                    <div style="margin-bottom:18px;border-radius:4px;overflow:hidden;border:1px solid #f1ede5;">
                                         <img src="<?php echo esc_url($featured_data['thumb']); ?>" alt="" style="display:block;width:100%;height:auto;max-height:360px;object-fit:cover;">
                                     </div>
                                 <?php endif; ?>
@@ -129,7 +135,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                         <tr>
                                                             <?php if ($item['thumb']) : ?>
                                                                 <td width="88" valign="top" style="padding-right:14px;">
-                                                                    <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:88px;height:88px;border-radius:6px;object-fit:cover;">
+                                                                    <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:88px;height:88px;border-radius:3px;object-fit:cover;">
                                                                 </td>
                                                             <?php endif; ?>
                                                             <td valign="top">
@@ -158,7 +164,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                 <div style="font-size:12px;line-height:1.4;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:#a7f3d0;margin-bottom:14px;">
                                     Daily Briefing
                                 </div>
-                                <h1 style="margin:0 0 10px 0;font-size:32px;line-height:1.08;font-weight:800;color:<?php echo esc_attr($dark_panel_text); ?>;">Le digest du jour</h1>
+                                <h1 style="margin:0 0 10px 0;font-size:32px;line-height:1.08;font-weight:800;color:<?php echo esc_attr($dark_panel_text); ?>;"><?php echo esc_html($digest_context['header_title']); ?></h1>
                                 <p style="margin:0;font-size:15px;line-height:1.7;color:<?php echo esc_attr($dark_panel_text); ?>;opacity:.82;"><?php echo esc_html(wp_strip_all_tags($settings['intro_text'])); ?></p>
                             </td>
                         </tr>
@@ -192,16 +198,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                         <?php endforeach; ?>
                     <?php elseif ($layout === 'magazine') : ?>
                         <tr>
-                            <td style="background:<?php echo esc_attr($panel_bg); ?>;border:1px solid <?php echo esc_attr($panel_border); ?>;border-radius:28px;padding:28px;box-shadow:0 8px 24px rgba(15,23,42,.04);">
-                                <div style="font-size:12px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px;">
-                                    Magazine
-                                </div>
-                                <h1 style="margin:0 0 10px 0;font-size:32px;line-height:1.08;font-weight:800;color:<?php echo esc_attr($text); ?>;">Sélection du jour</h1>
-                                <p style="margin:0;font-size:15px;line-height:1.7;color:<?php echo esc_attr($soft_text); ?>;"><?php echo esc_html(wp_strip_all_tags($settings['intro_text'])); ?></p>
-                            </td>
-                        </tr>
-                        <tr>
-                            <td style="padding-top:16px;">
+                            <td>
                                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                                     <?php foreach ($posts as $index => $post) : ?>
                                         <?php $item = $render_post_data($post); ?>
@@ -213,15 +210,25 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                 <?php endif; ?>
                                                 <tr>
                                                     <td style="padding:18px;">
-                                                        <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;">
-                                                            <?php echo esc_html($item['label']); ?>
-                                                        </div>
-                                                        <div style="margin:0 0 8px 0;font-size:20px;line-height:1.25;font-weight:800;color:#111827;">
-                                                            <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
-                                                        </div>
-                                                        <div style="font-size:14px;line-height:1.7;color:#4b5563;">
-                                                            <?php echo esc_html(wp_trim_words($item['excerpt'], 16)); ?>
-                                                        </div>
+                                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="height:170px;">
+                                                            <tr>
+                                                                <td valign="top" style="height:24px;font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;padding:0 0 8px;">
+                                                                    <?php echo esc_html($item['label']); ?>
+                                                                </td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td valign="top" style="height:78px;padding:0 0 8px;">
+                                                                    <div style="margin:0;font-size:20px;line-height:1.25;font-weight:800;color:#111827;">
+                                                                        <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
+                                                                    </div>
+                                                                </td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td valign="top" style="height:60px;font-size:14px;line-height:1.7;color:#4b5563;">
+                                                                    <?php echo esc_html(wp_trim_words($item['excerpt'], 16)); ?>
+                                                                </td>
+                                                            </tr>
+                                                        </table>
                                                     </td>
                                                 </tr>
                                             </table>
@@ -311,7 +318,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                             </td>
                                                             <?php if ($item['thumb']) : ?>
                                                                 <td width="110" valign="top" style="padding-left:12px;">
-                                                                    <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:96px;height:96px;border-radius:6px;object-fit:cover;">
+                                                                    <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:96px;height:96px;border-radius:3px;object-fit:cover;">
                                                                 </td>
                                                             <?php endif; ?>
                                                         </tr>
@@ -349,7 +356,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                         <tr>
                             <td style="padding-top:14px;">
                                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:<?php echo esc_attr($panel_bg); ?>;border:1px solid <?php echo esc_attr($panel_border); ?>;border-radius:24px;">
-                                    <tr><td style="padding:24px;font-size:15px;line-height:1.7;color:<?php echo esc_attr($soft_text); ?>;">Aucun nouvel article aujourd'hui.</td></tr>
+                                    <tr><td style="padding:24px;font-size:15px;line-height:1.7;color:<?php echo esc_attr($soft_text); ?>;"><?php echo esc_html($digest_context['empty_text']); ?></td></tr>
                                 </table>
                             </td>
                         </tr>

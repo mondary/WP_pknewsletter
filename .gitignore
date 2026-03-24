@@ -13,3 +13,4 @@ inspi/
 # OS / temp
 *.log
 *.tmp
+.build/

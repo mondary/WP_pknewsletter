@@ -152,7 +152,12 @@ final class WPPK_Newsletter
     public function sanitize_settings(array $input): array
     {
         $defaults = $this->default_settings();
+        $existing = $this->get_settings();
         $subject = $this->normalize_subject_template($input['subject'] ?? $defaults['subject'], $defaults['subject']);
+        $smtpPassword = sanitize_text_field($input['smtp_password'] ?? '');
+        if ($smtpPassword === '') {
+            $smtpPassword = (string) ($existing['smtp_password'] ?? $defaults['smtp_password']);
+        }
 
         return [
             'brand_name' => sanitize_text_field($input['brand_name'] ?? $defaults['brand_name']),
@@ -174,7 +179,7 @@ final class WPPK_Newsletter
             'smtp_port' => min(65535, max(1, absint($input['smtp_port'] ?? $defaults['smtp_port']))),
             'smtp_secure' => in_array(($input['smtp_secure'] ?? $defaults['smtp_secure']), ['none', 'ssl', 'tls'], true) ? $input['smtp_secure'] : 'none',
             'smtp_username' => sanitize_text_field($input['smtp_username'] ?? $defaults['smtp_username']),
-            'smtp_password' => sanitize_text_field($input['smtp_password'] ?? $defaults['smtp_password']),
+            'smtp_password' => $smtpPassword,
         ];
     }
 
@@ -210,10 +215,10 @@ final class WPPK_Newsletter
         return trim($subject);
     }
 
-    private function render_subject(string $subjectTemplate, bool $isTest = false): string
+    private function render_subject(string $subjectTemplate, bool $isTest = false, ?int $reference_timestamp = null): string
     {
         $subject = $this->normalize_subject_template($subjectTemplate, $this->default_settings()['subject']);
-        $subject = str_replace('%date%', wp_date('d/m/Y'), $subject);
+        $subject = str_replace('%date%', wp_date('d/m/Y', $reference_timestamp), $subject);
 
         return $isTest ? '[TEST] ' . $subject : $subject;
     }
@@ -363,6 +368,8 @@ final class WPPK_Newsletter
 
         $settings = $this->get_settings();
         $recipient = sanitize_email(wp_unslash($_POST['test_recipient'] ?? ''));
+        $digest_window = $this->sanitize_test_digest_window(wp_unslash($_POST['digest_window'] ?? 'today'));
+        $test_layout = $this->sanitize_email_layout(wp_unslash($_POST['test_email_layout'] ?? $settings['email_layout']));
         if (!$recipient) {
             $recipient = $settings['preview_email'] ?: get_option('admin_email');
         }
@@ -377,7 +384,7 @@ final class WPPK_Newsletter
             exit;
         }
 
-        $result = $this->send_test_digest($recipient);
+        $result = $this->send_test_digest($recipient, $digest_window, $test_layout);
         $args['wppk_debug'] = $result['reason'];
         wp_safe_redirect(add_query_arg($args, admin_url('admin.php')));
         exit;
@@ -819,13 +826,12 @@ final class WPPK_Newsletter
 
         $settings = $this->get_settings();
         $stats = $this->get_stats();
-        $posts = $this->get_digest_posts();
+        $posts = $this->get_daily_posts_overview();
         $preview = $this->build_email_html($posts, $settings, $settings['preview_email'] ?: get_option('admin_email'));
         $tab = sanitize_key($_GET['tab'] ?? 'dashboard');
         $tabs = [
             'dashboard' => __('Dashboard', 'wppknewsletter'),
             'subscribers' => __('Abonnes', 'wppknewsletter'),
-            'posts' => __('Posts du jour', 'wppknewsletter'),
             'stats' => __('Statistiques', 'wppknewsletter'),
             'settings' => __('Reglages', 'wppknewsletter'),
         ];
@@ -833,15 +839,16 @@ final class WPPK_Newsletter
             'dashboard' => __('Dashboard', 'wppknewsletter'),
             'settings' => __('Settings', 'wppknewsletter'),
             'subscribers' => __('Abonnes', 'wppknewsletter'),
-            'posts' => __('Today posts', 'wppknewsletter'),
             'stats' => __('Statistics', 'wppknewsletter'),
         ];
+        if (!isset($tabs[$tab])) {
+            $tab = 'dashboard';
+        }
         ?>
         <div class="wrap">
             <div class="wppk-admin-shell">
                 <header class="wppk-topbar">
                     <div class="wppk-topbar__intro">
-                        <div class="wppk-admin-kicker"><?php echo esc_html($settings['brand_name']); ?></div>
                         <h1 class="wppk-admin-title"><?php echo esc_html($page_titles[$tab] ?? 'Newsletter'); ?></h1>
                     </div>
                     <nav class="wppk-topbar__nav" aria-label="Navigation newsletter">
@@ -941,7 +948,7 @@ final class WPPK_Newsletter
                                         <div class="wppk-field"><label for="smtp_port">SMTP port</label><input type="number" min="1" max="65535" name="<?php echo esc_attr(self::OPTION_KEY); ?>[smtp_port]" id="smtp_port" value="<?php echo esc_attr((string) $settings['smtp_port']); ?>"></div>
                                         <div class="wppk-field"><label for="smtp_secure">Sécurité SMTP</label><select name="<?php echo esc_attr(self::OPTION_KEY); ?>[smtp_secure]" id="smtp_secure"><option value="none" <?php selected($settings['smtp_secure'], 'none'); ?>>Aucune</option><option value="ssl" <?php selected($settings['smtp_secure'], 'ssl'); ?>>SSL</option><option value="tls" <?php selected($settings['smtp_secure'], 'tls'); ?>>TLS</option></select></div>
                                         <div class="wppk-field"><label for="smtp_username">SMTP username</label><input name="<?php echo esc_attr(self::OPTION_KEY); ?>[smtp_username]" id="smtp_username" type="text" value="<?php echo esc_attr($settings['smtp_username']); ?>"></div>
-                                        <div class="wppk-field"><label for="smtp_password">SMTP password / app password</label><input type="password" name="<?php echo esc_attr(self::OPTION_KEY); ?>[smtp_password]" id="smtp_password" value="<?php echo esc_attr($settings['smtp_password']); ?>"><p class="description">Pour Gmail, utilise un mot de passe d’application Google, pas ton mot de passe principal.</p></div>
+                                        <div class="wppk-field"><label for="smtp_password">SMTP password / app password</label><input type="password" name="<?php echo esc_attr(self::OPTION_KEY); ?>[smtp_password]" id="smtp_password" value="" autocomplete="new-password" placeholder="Laisser vide pour conserver le mot de passe actuel"><p class="description">Pour Gmail, utilise un mot de passe d’application Google, pas ton mot de passe principal.</p></div>
                                     </div>
                                 </section>
                             </div>
@@ -975,6 +982,11 @@ final class WPPK_Newsletter
                                 placeholder="destinataire@test.com"
                                 style="min-width:320px;"
                             >
+                            <select name="digest_window">
+                                <?php foreach ($this->get_test_digest_window_options() as $window_key => $window_label) : ?>
+                                    <option value="<?php echo esc_attr($window_key); ?>"><?php echo esc_html($window_label); ?></option>
+                                <?php endforeach; ?>
+                            </select>
                             <?php submit_button(__('Envoyer un digest de test', 'wppknewsletter'), 'primary', 'submit', false); ?>
                         </form>
                     </section>
@@ -1000,15 +1012,6 @@ final class WPPK_Newsletter
                         </div>
                     </div>
                     <?php $this->render_subscribers_table(); ?>
-                </section>
-            <?php elseif ($tab === 'posts') : ?>
-                <section class="wppk-panel">
-                    <div class="wppk-panel__header">
-                        <div>
-                            <h2 class="wppk-panel__title"><?php esc_html_e('Posts du jour', 'wppknewsletter'); ?></h2>
-                        </div>
-                    </div>
-                    <?php $this->render_posts_table($posts); ?>
                 </section>
             <?php elseif ($tab === 'stats') : ?>
                 <section class="wppk-panel">
@@ -1070,11 +1073,12 @@ final class WPPK_Newsletter
         $growth = $this->get_subscriber_growth_data('day');
         echo $this->render_dual_line_chart_card(
             'Progression des abonnes',
-            'Abonnements et desabonnements sur les 30 derniers jours',
+            'Volume cumulé sur les 30 derniers jours',
             $growth['subscribed_series'],
             $growth['unsubscribed_series'],
-            'Abonnements',
-            'Desabonnements'
+            'Actifs',
+            'Désinscrits',
+            'wppk-chart-card--mini'
         );
         ?>
 
@@ -1240,6 +1244,16 @@ final class WPPK_Newsletter
         echo '<input type="hidden" name="action" value="wppk_send_test_digest">';
         wp_nonce_field('wppk_send_test_digest');
         echo '<input type="email" name="test_recipient" value="' . esc_attr($test_recipient) . '" placeholder="destinataire@test.com">';
+        echo '<select name="digest_window">';
+        foreach ($this->get_test_digest_window_options() as $window_key => $window_label) {
+            echo '<option value="' . esc_attr($window_key) . '">' . esc_html($window_label) . '</option>';
+        }
+        echo '</select>';
+        echo '<select name="test_email_layout">';
+        foreach ($this->get_email_layout_options() as $layout_key => $layout_label) {
+            echo '<option value="' . esc_attr($layout_key) . '"' . selected($settings['email_layout'], $layout_key, false) . '>' . esc_html($layout_label) . '</option>';
+        }
+        echo '</select>';
         submit_button(__('Envoyer un digest de test', 'wppknewsletter'), 'primary', 'submit', false);
         echo '</form>';
         echo '</section>';
@@ -1247,7 +1261,7 @@ final class WPPK_Newsletter
         echo '<section class="wppk-panel wppk-dashboard-card wppk-dashboard-card--posts">';
         echo '<div class="wppk-panel__header"><div><h2 class="wppk-panel__title">Posts du jour</h2><p class="wppk-panel__copy">Aperçu rapide des prochains contenus injectés dans le digest.</p></div></div>';
         if (!$posts) {
-            echo '<p class="wppk-empty-copy">Aucun post publié aujourd’hui.</p>';
+            echo '<p class="wppk-empty-copy">Aucun post publié ou planifié aujourd’hui.</p>';
         } else {
             echo '<div class="wppk-post-preview-grid wppk-post-preview-grid--dashboard">';
             foreach (array_slice($posts, 0, 4) as $post) {
@@ -1255,6 +1269,10 @@ final class WPPK_Newsletter
                 $label = $cats ? $cats[0]->name : 'Article';
                 $thumb = get_the_post_thumbnail_url($post, 'medium');
                 $excerpt = wp_trim_words(wp_strip_all_tags(get_the_excerpt($post) ?: $post->post_content), 14);
+                $status = get_post_status($post);
+                $is_scheduled = $status === 'future';
+                $status_label = $this->format_post_status_label($status);
+                $link = $is_scheduled ? get_preview_post_link($post) : get_permalink($post);
                 echo '<article class="wppk-post-card wppk-post-card--compact">';
                 if ($thumb) {
                     echo '<div class="wppk-post-card__media"><img src="' . esc_url($thumb) . '" alt="" /></div>';
@@ -1264,10 +1282,14 @@ final class WPPK_Newsletter
                 echo '<div class="wppk-post-card__body">';
                 echo '<div class="wppk-post-card__meta">';
                 echo '<span class="wppk-post-card__badge">' . esc_html($label) . '</span>';
-                echo '<span class="wppk-post-card__date">' . esc_html(get_the_date('d/m/Y H:i', $post)) . '</span>';
+                echo '<span class="wppk-post-card__date">' . esc_html(wp_date('d/m/Y H:i', get_post_timestamp($post, 'date'))) . '</span>';
                 echo '</div>';
-                echo '<h3 class="wppk-post-card__title"><a href="' . esc_url(get_permalink($post)) . '" target="_blank" rel="noreferrer">' . esc_html(get_the_title($post)) . '</a></h3>';
+                echo '<h3 class="wppk-post-card__title"><a href="' . esc_url($link) . '" target="_blank" rel="noreferrer">' . esc_html(get_the_title($post)) . '</a></h3>';
                 echo '<p class="wppk-post-card__excerpt">' . esc_html($excerpt) . '</p>';
+                echo '<div class="wppk-post-card__footer">';
+                echo '<span class="wppk-post-card__status' . ($is_scheduled ? ' is-scheduled' : '') . '">' . esc_html($status_label) . '</span>';
+                echo '<span class="wppk-post-card__date">' . esc_html($is_scheduled ? 'Publication à ' . wp_date('H:i', get_post_timestamp($post, 'date')) : 'Déjà publié') . '</span>';
+                echo '</div>';
                 echo '</div>';
                 echo '</article>';
             }
@@ -1476,26 +1498,6 @@ final class WPPK_Newsletter
             ];
         }
 
-        if ($tab === 'posts') {
-            return [
-                [
-                    'title' => __('Posts du jour', 'wppknewsletter'),
-                    'value' => (string) count($posts),
-                    'meta' => __('Articles injectables maintenant', 'wppknewsletter'),
-                ],
-                [
-                    'title' => __('Max digest', 'wppknewsletter'),
-                    'value' => (string) $settings['posts_per_digest'],
-                    'meta' => __('Limite actuelle du digest', 'wppknewsletter'),
-                ],
-                [
-                    'title' => __('Template', 'wppknewsletter'),
-                    'value' => (string) ($this->get_email_layout_options()[$settings['email_layout']] ?? $settings['email_layout']),
-                    'meta' => __('Rendu utilisé pour ces contenus', 'wppknewsletter'),
-                ],
-            ];
-        }
-
         if ($tab === 'stats') {
             $summary = $this->get_stats_dashboard_data('day');
 
@@ -1540,7 +1542,7 @@ final class WPPK_Newsletter
     private function render_posts_table(array $posts): void
     {
         if (!$posts) {
-            echo '<p>Aucun post publie aujourd\'hui.</p>';
+            echo '<p>Aucun post publie ou planifie aujourd\'hui.</p>';
             return;
         }
         echo '<div class="wppk-post-preview-grid">';
@@ -1550,6 +1552,12 @@ final class WPPK_Newsletter
             $thumb = get_the_post_thumbnail_url($post, 'medium_large');
             $excerpt = wp_trim_words(wp_strip_all_tags(get_the_excerpt($post) ?: $post->post_content), 26);
             $status = get_post_status($post);
+            $is_scheduled = $status === 'future';
+            $status_label = $this->format_post_status_label($status);
+            $status_meta = $is_scheduled
+                ? 'Planifié · ' . wp_date('H:i', get_post_timestamp($post, 'date'))
+                : 'Publié';
+            $link = $is_scheduled ? get_preview_post_link($post) : get_permalink($post);
 
             echo '<article class="wppk-post-card">';
             if ($thumb) {
@@ -1560,13 +1568,13 @@ final class WPPK_Newsletter
             echo '<div class="wppk-post-card__body">';
             echo '<div class="wppk-post-card__meta">';
             echo '<span class="wppk-post-card__badge">' . esc_html($label) . '</span>';
-            echo '<span class="wppk-post-card__date">' . esc_html(get_the_date('d/m/Y H:i', $post)) . '</span>';
+            echo '<span class="wppk-post-card__date">' . esc_html(wp_date('d/m/Y H:i', get_post_timestamp($post, 'date'))) . '</span>';
             echo '</div>';
-            echo '<h3 class="wppk-post-card__title"><a href="' . esc_url(get_permalink($post)) . '" target="_blank" rel="noreferrer">' . esc_html(get_the_title($post)) . '</a></h3>';
+            echo '<h3 class="wppk-post-card__title"><a href="' . esc_url($link) . '" target="_blank" rel="noreferrer">' . esc_html(get_the_title($post)) . '</a></h3>';
             echo '<p class="wppk-post-card__excerpt">' . esc_html($excerpt) . '</p>';
             echo '<div class="wppk-post-card__footer">';
-            echo '<span class="wppk-post-card__status">Statut: ' . esc_html($status) . '</span>';
-            echo '<a class="wppk-post-card__link" href="' . esc_url(get_permalink($post)) . '" target="_blank" rel="noreferrer">Ouvrir</a>';
+            echo '<span class="wppk-post-card__status' . ($is_scheduled ? ' is-scheduled' : '') . '">' . esc_html($status_label) . '</span>';
+            echo '<a class="wppk-post-card__link" href="' . esc_url($link) . '" target="_blank" rel="noreferrer">' . esc_html($status_meta) . '</a>';
             echo '</div>';
             echo '</div>';
             echo '</article>';
@@ -1643,23 +1651,44 @@ final class WPPK_Newsletter
         }
     }
 
-    private function get_digest_posts(): array
+    private function get_digest_posts(string $digest_window = 'today'): array
     {
         $settings = $this->get_settings();
-        $start = wp_date('Y-m-d 00:00:00');
-        $end = wp_date('Y-m-d 23:59:59');
+        $digest_context = $this->get_digest_context($digest_window);
 
         $query = new WP_Query([
             'post_type' => 'post',
             'post_status' => 'publish',
             'posts_per_page' => (int) $settings['posts_per_digest'],
             'date_query' => [[
-                'after' => $start,
-                'before' => $end,
+                'after' => $digest_context['start'],
+                'before' => $digest_context['end'],
                 'inclusive' => true,
             ]],
             'orderby' => 'date',
             'order' => 'DESC',
+        ]);
+
+        return $query->posts;
+    }
+
+    private function get_daily_posts_overview(): array
+    {
+        $settings = $this->get_settings();
+        $digest_context = $this->get_digest_context('today');
+
+        $query = new WP_Query([
+            'post_type' => 'post',
+            'post_status' => ['publish', 'future'],
+            'posts_per_page' => (int) $settings['posts_per_digest'],
+            'date_query' => [[
+                'after' => $digest_context['start'],
+                'before' => $digest_context['end'],
+                'inclusive' => true,
+                'column' => 'post_date',
+            ]],
+            'orderby' => 'date',
+            'order' => 'ASC',
         ]);
 
         return $query->posts;
@@ -1706,11 +1735,15 @@ final class WPPK_Newsletter
         return ['sent' => $sent, 'reason' => ''];
     }
 
-    private function send_test_digest(string $recipient): array
+    private function send_test_digest(string $recipient, string $digest_window = 'today', ?string $test_layout = null): array
     {
-        $posts = $this->get_digest_posts();
+        $digest_context = $this->get_digest_context($digest_window);
+        $posts = $this->get_digest_posts($digest_window);
         $settings = $this->get_settings();
-        $html = $this->build_email_html($posts, $settings, $recipient);
+        if ($test_layout) {
+            $settings['email_layout'] = $test_layout;
+        }
+        $html = $this->build_email_html($posts, $settings, $recipient, '', $digest_context);
         $headers = [
             'Content-Type: text/html; charset=UTF-8',
             'From: ' . $settings['sender_name'] . ' <' . $settings['sender_email'] . '>',
@@ -1720,25 +1753,59 @@ final class WPPK_Newsletter
             $headers[] = 'Reply-To: ' . $settings['reply_to'];
         }
 
-        $subject = $this->render_subject($settings['subject'], true);
+        $subject = $this->render_subject($settings['subject'], true, $digest_context['timestamp']);
 
         if (wp_mail($recipient, $subject, $html, $headers)) {
-            return ['reason' => 'Digest de test envoyé à ' . $recipient . '.'];
+            $layout_label = $this->get_email_layout_options()[$settings['email_layout']] ?? $settings['email_layout'];
+            return ['reason' => sprintf('Digest de test (%s, %s) envoyé à %s.', $digest_context['label'], $layout_label, $recipient)];
         }
 
         return ['reason' => 'Échec de l’envoi test. Vérifie wp_mail(), le spam ou la config serveur.'];
     }
 
-    private function build_email_html(array $posts, array $settings, string $recipient, string $unsubscribe_token = ''): string
+    private function build_email_html(array $posts, array $settings, string $recipient, string $unsubscribe_token = '', ?array $digest_context = null): string
     {
         $site_name = $settings['brand_name'];
         $accent = $settings['accent_color'];
         $theme = $this->get_email_theme_palette($settings['email_theme'] ?? 'paper');
         $unsubscribe_url = $unsubscribe_token ? add_query_arg('wppk_unsubscribe', rawurlencode($unsubscribe_token), home_url('/')) : '';
+        $digest_context = $digest_context ?? $this->get_digest_context('today');
 
         ob_start();
         include WPPKNEWSLETTER_PATH . 'templates/email-digest.php';
         return (string) ob_get_clean();
+    }
+
+    private function sanitize_test_digest_window(string $value): string
+    {
+        return in_array($value, ['today', 'yesterday'], true) ? $value : 'today';
+    }
+
+    private function get_test_digest_window_options(): array
+    {
+        return [
+            'today' => 'Aujourd’hui',
+            'yesterday' => 'Hier',
+        ];
+    }
+
+    private function get_digest_context(string $digest_window = 'today'): array
+    {
+        $digest_window = $this->sanitize_test_digest_window($digest_window);
+        $timestamp = $digest_window === 'yesterday'
+            ? strtotime('-1 day', current_time('timestamp'))
+            : current_time('timestamp');
+
+        return [
+            'window' => $digest_window,
+            'timestamp' => $timestamp,
+            'start' => wp_date('Y-m-d 00:00:00', $timestamp),
+            'end' => wp_date('Y-m-d 23:59:59', $timestamp),
+            'label' => $digest_window === 'yesterday' ? 'hier' : 'aujourd’hui',
+            'header_title' => $digest_window === 'yesterday' ? 'Le digest d’hier' : 'Le digest du jour',
+            'selection_title' => $digest_window === 'yesterday' ? 'Sélection d’hier' : 'Sélection du jour',
+            'empty_text' => $digest_window === 'yesterday' ? 'Aucun nouvel article hier.' : 'Aucun nouvel article aujourd\'hui.',
+        ];
     }
 
     private function get_active_subscribers(): array
@@ -1927,8 +1994,21 @@ final class WPPK_Newsletter
         return [
             'active' => $active,
             'unsubscribed' => $unsubscribed,
-            'posts_today' => count($this->get_digest_posts()),
+            'posts_today' => count($this->get_daily_posts_overview()),
         ];
+    }
+
+    private function format_post_status_label(string $status): string
+    {
+        if ($status === 'future') {
+            return 'Planifié';
+        }
+
+        if ($status === 'publish') {
+            return 'Publié';
+        }
+
+        return ucfirst($status);
     }
 
     private function get_stats_dashboard_data(string $range): array
@@ -2131,10 +2211,11 @@ final class WPPK_Newsletter
         return '<div class="wppk-chart-card"><div class="wppk-chart-card__header"><div><h3 class="wppk-stats-section-title" style="margin:0;">' . esc_html($title) . '</h3><p class="wppk-chart-card__caption">' . esc_html($caption) . '</p></div></div>' . $this->render_svg_line_chart($series) . '</div>';
     }
 
-    private function render_dual_line_chart_card(string $title, string $caption, array $primarySeries, array $secondarySeries, string $primaryLabel, string $secondaryLabel): string
+    private function render_dual_line_chart_card(string $title, string $caption, array $primarySeries, array $secondarySeries, string $primaryLabel, string $secondaryLabel, string $card_class = ''): string
     {
         $legend = '<div class="wppk-chart-legend"><span class="wppk-chart-legend__item"><span class="wppk-chart-legend__dot is-primary"></span>' . esc_html($primaryLabel) . '</span><span class="wppk-chart-legend__item"><span class="wppk-chart-legend__dot is-secondary"></span>' . esc_html($secondaryLabel) . '</span></div>';
-        return '<div class="wppk-chart-card"><div class="wppk-chart-card__header"><div><h3 class="wppk-stats-section-title" style="margin:0;">' . esc_html($title) . '</h3><p class="wppk-chart-card__caption">' . esc_html($caption) . '</p></div>' . $legend . '</div>' . $this->render_svg_dual_line_chart($primarySeries, $secondarySeries) . '</div>';
+        $classes = trim('wppk-chart-card ' . $card_class);
+        return '<div class="' . esc_attr($classes) . '"><div class="wppk-chart-card__header"><div><h3 class="wppk-stats-section-title" style="margin:0;">' . esc_html($title) . '</h3><p class="wppk-chart-card__caption">' . esc_html($caption) . '</p></div>' . $legend . '</div>' . $this->render_svg_dual_line_chart($primarySeries, $secondarySeries, $card_class === 'wppk-chart-card--mini') . '</div>';
     }
 
     private function render_svg_line_chart(array $series): string
@@ -2199,18 +2280,18 @@ final class WPPK_Newsletter
         return (string) ob_get_clean();
     }
 
-    private function render_svg_dual_line_chart(array $primarySeries, array $secondarySeries): string
+    private function render_svg_dual_line_chart(array $primarySeries, array $secondarySeries, bool $compact = false): string
     {
         if (!$primarySeries || !$secondarySeries) {
             return '<p>Aucune donnee.</p>';
         }
 
         $width = 960;
-        $height = 280;
+        $height = $compact ? 190 : 280;
         $paddingLeft = 48;
         $paddingRight = 16;
-        $paddingTop = 16;
-        $paddingBottom = 40;
+        $paddingTop = $compact ? 10 : 16;
+        $paddingBottom = $compact ? 28 : 40;
         $plotWidth = $width - $paddingLeft - $paddingRight;
         $plotHeight = $height - $paddingTop - $paddingBottom;
         $allValues = array_merge(
@@ -2256,13 +2337,13 @@ final class WPPK_Newsletter
                 <polyline points="<?php echo esc_attr(implode(' ', array_column($primaryPoints, 'coords'))); ?>" class="wppk-chart__line" />
                 <polyline points="<?php echo esc_attr(implode(' ', array_column($secondaryPoints, 'coords'))); ?>" class="wppk-chart__line wppk-chart__line--secondary" />
                 <?php foreach ($primaryPoints as $index => $point) : ?>
-                    <circle cx="<?php echo esc_attr((string) $point['x']); ?>" cy="<?php echo esc_attr((string) $point['y']); ?>" r="3.5" class="wppk-chart__point" />
+                    <circle cx="<?php echo esc_attr((string) $point['x']); ?>" cy="<?php echo esc_attr((string) $point['y']); ?>" r="<?php echo esc_attr($compact ? '2.5' : '3.5'); ?>" class="wppk-chart__point" />
                     <?php if ($index % max(1, (int) floor($count / 8)) === 0 || $index === $count - 1) : ?>
                         <text x="<?php echo esc_attr((string) $point['x']); ?>" y="<?php echo esc_attr((string) ($height - 10)); ?>" text-anchor="middle" class="wppk-chart__axis"><?php echo esc_html($point['label']); ?></text>
                     <?php endif; ?>
                 <?php endforeach; ?>
                 <?php foreach ($secondaryPoints as $point) : ?>
-                    <circle cx="<?php echo esc_attr((string) $point['x']); ?>" cy="<?php echo esc_attr((string) $point['y']); ?>" r="3.5" class="wppk-chart__point wppk-chart__point--secondary" />
+                    <circle cx="<?php echo esc_attr((string) $point['x']); ?>" cy="<?php echo esc_attr((string) $point['y']); ?>" r="<?php echo esc_attr($compact ? '2.5' : '3.5'); ?>" class="wppk-chart__point wppk-chart__point--secondary" />
                 <?php endforeach; ?>
             </svg>
         </div>
@@ -2388,8 +2469,8 @@ final class WPPK_Newsletter
                 'label' => $period['label'],
                 'value' => (int) $wpdb->get_var(
                     $wpdb->prepare(
-                        "SELECT COUNT(*) FROM {$subscriber_table} WHERE subscribed_at >= %s AND subscribed_at <= %s",
-                        $period['start'],
+                        "SELECT COUNT(*) FROM {$subscriber_table} WHERE subscribed_at <= %s AND (unsubscribed_at IS NULL OR unsubscribed_at > %s)",
+                        $period['end'],
                         $period['end']
                     )
                 ),
@@ -2398,8 +2479,7 @@ final class WPPK_Newsletter
                 'label' => $period['label'],
                 'value' => (int) $wpdb->get_var(
                     $wpdb->prepare(
-                        "SELECT COUNT(*) FROM {$subscriber_table} WHERE unsubscribed_at >= %s AND unsubscribed_at <= %s",
-                        $period['start'],
+                        "SELECT COUNT(*) FROM {$subscriber_table} WHERE unsubscribed_at IS NOT NULL AND unsubscribed_at <= %s",
                         $period['end']
                     )
                 ),

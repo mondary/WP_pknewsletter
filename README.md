@@ -5,16 +5,17 @@
 ✨ Plugin WordPress pour gérer une newsletter éditoriale quotidienne avec base abonnés, digest HTML, historique d’inscription et envoi SMTP intégré.
 
 ## ✅ Fonctionnalités
-- Dashboard admin dédié avec vues `Dashboard`, `Abonnés`, `Posts du jour`, `Statistiques`, `Réglages`
+- Dashboard admin dédié avec vues `Dashboard`, `Abonnés`, `Statistiques`, `Réglages`
 - Formulaire d’inscription front via shortcode
 - Gestion abonnés avec ajout manuel, import/export CSV, filtres, pagination et actions unitaires
 - Historique conservé des abonnements, désinscriptions et réinscriptions
 - Digest email HTML avec plusieurs mises en forme et thèmes visuels
 - Prévisualisation email directement dans l’admin
-- Envoi de digest de test vers une adresse dédiée
+- Envoi de digest de test vers une adresse dédiée avec choix du jour (`aujourd’hui` / `hier`) et du template à tester
 - SMTP intégré dans le plugin
 - Désinscription par lien tokenisé
 - Statistiques d’envoi et courbes d’évolution des abonnés
+- Dashboard `Posts du jour` affichant les contenus publiés et planifiés du jour, avec flag visuel sur les planifiés
 
 ## 🧠 Utilisation
 Le plugin sert à piloter une newsletter “digest” depuis WordPress sans dépendre d’un SaaS pour l’interface de gestion.
@@ -66,8 +67,16 @@ Fichiers principaux :
 - `src/assets/form.css`
 
 Pour préparer un zip :
-- utiliser une archive de build dans `extensions/`
+- lancer le script :
+
+```bash
+scripts/build-plugin.sh
+```
+
+- récupérer l’archive générée dans `extensions/`
 - téléverser l’archive depuis `Extensions > Ajouter > Téléverser une extension`
+
+Le build produit une archive avec un dossier racine stable `WPpknewsletter/`, ce qui permet à WordPress de remplacer correctement une version existante.
 
 ## 🧪 Installation
 1. Téléverse le plugin dans WordPress.
@@ -102,9 +111,14 @@ Exemple Amazon SES :
 - sécurité : `TLS`
 
 ## 🧾 Changelog
-- `1.0.7` : historique abonnés non destructif, courbe abonnés/désabonnés, rappel AWS free plan, stats compactées
-- `1.0.6` : correction du layout `List + thumbnails`
-- `1.0.5` : pagination abonnés et sélecteur du nombre d’éléments par page
+- `1.18` : logo header agrandi, thumbnails email avec radius allégé, mot de passe SMTP non prérempli dans l’admin
+- `1.17` : ajustements email visuels
+- `1.16` : courbe abonnés en volume cumulé
+- `1.15` : courbe abonnés compactée
+- `1.14` : bloc `Envoyer un test` déplacé au-dessus de `Posts du jour` dans le dashboard
+- `1.13` : retrait de l’onglet `Posts du jour`, flag orange plus visible sur les contenus planifiés, build zip stabilisé
+- `1.12` : `Posts du jour` affiche les contenus publiés + planifiés avec heure prévue
+- `1.11` : normalisation du versioning au format `1.x`
 - `1.0.0` : première version stable utilisable
 
 ## 🔗 Liens
