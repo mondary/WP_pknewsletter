@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jetpack Newsletter Widget</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --wp-blue: #2271b1;
+            --text-main: #1d2327;
+            --text-light: #646970;
+            --bg-promo: #f0f0f1;
+            --border: #c3c4c7;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+            background-color: #f0f0f1;
+            margin: 20px;
+            color: var(--text-main);
+        }
+
+        .dashboard-widget {
+            background: #fff;
+            border: 1px solid var(--border);
+            box-shadow: 0 1px 1px rgba(0,0,0,.04);
+            max-width: 500px;
+        }
+
+        .widget-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 15px;
+            border-bottom: 1px solid #f0f0f1;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .header-actions {
+            color: var(--text-light);
+            display: flex;
+            gap: 12px;
+            font-size: 12px;
+        }
+
+        .widget-body {
+            padding: 15px;
+        }
+
+        .stats-summary {
+            display: flex;
+            gap: 25px;
+            margin-bottom: 20px;
+        }
+
+        .stat-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--wp-blue);
+            text-decoration: none;
+            font-size: 13px;
+        }
+
+        .icon {
+            width: 20px;
+            height: 20px;
+            fill: currentColor;
+        }
+
+        .chart-section {
+            margin-bottom: 20px;
+        }
+
+        .chart-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 15px;
+        }
+
+        .promo-block {
+            background-color: var(--bg-promo);
+            margin: 0 -15px 15px -15px;
+            padding: 15px;
+            font-size: 13px;
+            line-height: 1.5;
+            color: #50575e;
+        }
+
+        .promo-block a {
+            color: var(--wp-blue);
+            text-decoration: none;
+        }
+
+        .quick-links h4 {
+            margin: 0 0 12px 0;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .links-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px 20px;
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .links-grid li {
+            position: relative;
+            padding-left: 15px;
+            font-size: 13px;
+        }
+
+        .links-grid li::before {
+            content: "•";
+            position: absolute;
+            left: 0;
+        }
+
+        .links-grid a {
+            color: var(--wp-blue);
+            text-decoration: none;
+        }
+
+        .links-grid a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+
+<div class="dashboard-widget">
+    <div class="widget-header">
+        <span>Jetpack Newsletter</span>
+        <div class="header-actions">
+            <span style="cursor:pointer">▲</span>
+            <span style="cursor:pointer">▼</span>
+            <span style="cursor:pointer">▲</span>
+        </div>
+    </div>
+
+    <div class="widget-body">
+        <div class="stats-summary">
+            <a href="#" class="stat-link">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+                1 095 abonnés (997 par e-mail)
+            </a>
+            <a href="#" class="stat-link">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M21 18v1c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V5c0-1.1.9-2 2-2h14c1.1 0 2 .9 2 2v1h-9c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h9zm-9-2h10V8H12v8zm4-2.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>
+                0 abonné payant
+            </a>
+        </div>
+
+        <div class="chart-section">
+            <div class="chart-title">Total des abonnés</div>
+            <div style="height: 180px;">
+                <canvas id="subChart"></canvas>
+            </div>
+        </div>
+
+        <div class="promo-block">
+            Transformez vos articles en e-mails sans effort avec notre fonctionnalité de newsletter. Élargissez votre horizon, suscitez l'engagement de vos lecteurs et monétisez vos écrits. Aucun codage requis. <a href="#">En savoir plus ↗</a>
+        </div>
+
+        <div class="quick-links">
+            <h4>Liens rapides</h4>
+            <ul class="links-grid">
+                <li><a href="#">Publier votre prochain article</a></li>
+                <li><a href="#">Gérer les abonnés ↗</a></li>
+                <li><a href="#">Voir les statistiques relatives aux abonnés</a></li>
+                <li><a href="#">Monétiser ↗</a></li>
+                <li><a href="#">Importer des abonnés ↗</a></li>
+                <li><a href="#">Réglages de la newsletter</a></li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<script>
+    const ctx = document.getElementById('subChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: ['Jan 25', 'Fév 8', 'Fév 23', 'Mar 10', 'Mar 25'],
+            datasets: [
+                {
+                    label: 'Tous',
+                    data: [1180, 1175, 1170, 1160, 1095],
+                    borderColor: '#3858e9',
+                    backgroundColor: '#3858e9',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.2
+                },
+                {
+                    label: 'Premium',
+                    data: [0, 0, 0, 0, 0],
+                    borderColor: '#e17000',
+                    backgroundColor: '#e17000',
+                    borderWidth: 2,
+                    pointRadius: 0
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                    labels: {
+                        usePointStyle: true,
+                        pointStyle: 'circle',
+                        boxWidth: 8,
+                        padding: 20
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    max: 1200,
+                    ticks: { stepSize: 200, color: '#a7aaad' },
+                    grid: { color: '#f0f0f1' }
+                },
+                x: {
+                    grid: { display: false },
+                    ticks: { color: '#1d2327' }
+                }
+            }
+        }
+    });
+</script>
+
+</body>
+</html>

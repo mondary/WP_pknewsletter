@@ -1696,7 +1696,7 @@ final class WPPK_Newsletter
             'wppk-chart-card--mini'
         );
         echo $this->render_line_chart_card(
-            'Sending messages',
+            'Envois',
             is_array($aws_sending_data) ? 'Emails envoyés par AWS SES' : 'Emails envoyés par période',
             is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $sending_summary['sending_series'],
             'wppk-chart-card--mini'
@@ -1787,7 +1787,7 @@ final class WPPK_Newsletter
         echo '</div>';
 
         echo '<div class="chart-section">';
-        echo '<div class="chart-title">Sending messages</div>';
+        echo '<div class="chart-title">Envois</div>';
         echo '<div class="wppk-widget__subcaption">' . esc_html(is_array($aws_sending_data) ? '5 derniers jours AWS SES' : '5 derniers jours') . '</div>';
         echo '<div class="wppk-widget__canvas-box">';
         echo '<canvas class="wppk-widget-canvas wppk-widget-canvas--sending" data-labels="' . esc_attr(wp_json_encode($sending_labels)) . '" data-values="' . esc_attr(wp_json_encode($sending_values)) . '"></canvas>';
@@ -2707,13 +2707,13 @@ final class WPPK_Newsletter
         }
         echo '</div>';
 
-        echo '<h3 class="wppk-stats-section-title">Sending messages</h3>';
+        echo '<h3 class="wppk-stats-section-title">Envois</h3>';
         if (!is_array($aws_ses_stats)) {
             echo '<p class="description" style="margin:8px 0 0;">' . esc_html__('Stats AWS SES indisponibles. Renseigne la region, l’Access Key ID et la Secret Access Key dans Reglages > SMTP.', 'wppknewsletter') . '</p>';
         }
 
         echo $this->render_line_chart_card(
-            'Sending messages',
+            'Envois',
             is_array($aws_sending_data) ? 'Emails envoyes par AWS SES' : 'Emails envoyes par periode',
             is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $summary['sending_series']
         );
