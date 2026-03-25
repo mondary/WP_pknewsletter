@@ -30,6 +30,7 @@ final class WPPK_Newsletter
         add_action('admin_menu', [$instance, 'register_admin_page']);
         add_action('admin_enqueue_scripts', [$instance, 'enqueue_admin_assets']);
         add_action('wp_dashboard_setup', [$instance, 'register_wp_dashboard_widget']);
+        add_action('admin_footer-index.php', [$instance, 'render_wp_dashboard_widget_script']);
         add_action('admin_bar_menu', [$instance, 'register_admin_bar_node'], 90);
         add_action('admin_post_wppk_subscribe', [$instance, 'handle_subscribe']);
         add_action('admin_post_nopriv_wppk_subscribe', [$instance, 'handle_subscribe']);
@@ -72,6 +73,13 @@ final class WPPK_Newsletter
 
         wp_enqueue_style('wppk-newsletter-admin');
         if ($hook === 'index.php') {
+            wp_enqueue_script(
+                'wppk-chartjs',
+                'https://cdn.jsdelivr.net/npm/chart.js',
+                [],
+                null,
+                true
+            );
             return;
         }
 
@@ -1139,14 +1147,14 @@ final class WPPK_Newsletter
             $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : digest en pause', $source));
             return;
         }
-        $today = wp_date('Y-m-d');
+        $now = current_datetime();
+        $today = $now->format('Y-m-d');
         $last_sent = get_option('wppk_newsletter_last_sent_date', '');
-        $now_timestamp = current_time('timestamp');
-        $current_hm = (int) wp_date('Hi', $now_timestamp);
+        $current_hm = (int) $now->format('Hi');
         $lock_key = 'wppk_digest_send_lock';
 
         if ($current_hm < 1410 || $current_hm > 2000) {
-            $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : hors fenêtre (%s)', $source, wp_date('H:i', $now_timestamp)));
+            $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : hors fenêtre (%s)', $source, $now->format('H:i')));
             return;
         }
 
@@ -1732,32 +1740,185 @@ final class WPPK_Newsletter
         $growth_primary = array_slice($growth['subscribed_series'] ?? [], -5);
         $growth_secondary = array_slice($growth['unsubscribed_series'] ?? [], -5);
         $series = array_slice(is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $sending_summary['sending_series'], -5);
+        $audience = strtoupper($this->get_active_audience());
+        $settings_url = admin_url('admin.php?page=wppk-newsletter&tab=settings');
+        $subscribers_url = admin_url('admin.php?page=wppk-newsletter&tab=subscribers');
+        $stats_url = admin_url('admin.php?page=wppk-newsletter&tab=stats');
+        $dashboard_url = admin_url('admin.php?page=wppk-newsletter');
+        $paused = $this->is_digest_paused();
+        $active_count_label = preg_replace('/\s*\/.*$/', '', $overview_metrics['active_value']) ?: $overview_metrics['active_value'];
+        $sent_count_label = $overview_metrics['sent_value'];
+        $third_count_label = $overview_metrics['third_value'];
+        $status_label = $paused ? 'Pause' : 'Actif';
+        $chart_id_growth = 'wppkWidgetGrowthChart';
+        $chart_id_sending = 'wppkWidgetSendingChart';
+        $growth_labels = array_map(static fn($point) => (string) ($point['label'] ?? ''), $growth_primary);
+        $growth_primary_values = array_map(static fn($point) => (int) ($point['value'] ?? 0), $growth_primary);
+        $growth_secondary_values = array_map(static fn($point) => (int) ($point['value'] ?? 0), $growth_secondary);
+        $sending_labels = array_map(static fn($point) => (string) ($point['label'] ?? ''), $series);
+        $sending_values = array_map(static fn($point) => (int) ($point['value'] ?? 0), $series);
+        echo '<div class="dashboard-widget wppk-widget">';
+        echo '<div class="widget-header">';
+        echo '<span>WP PK Newsletter</span>';
+        echo '<div class="header-actions"><span>' . esc_html($audience) . '</span><span>' . esc_html($status_label) . '</span></div>';
+        echo '</div>';
+        echo '<div class="widget-body">';
 
-        echo '<div class="wppk-wp-dashboard-widget">';
-        echo '<div class="wppk-stat-grid wppk-stat-grid--dashboard">';
-        echo $this->render_stat_card(__('Abonnes actifs', 'wppknewsletter'), $overview_metrics['active_value'], $overview_metrics['active_meta']);
-        echo $this->render_stat_card(__('Emails envoyes', 'wppknewsletter'), $overview_metrics['sent_value'], $overview_metrics['sent_meta']);
-        echo $this->render_stat_card($overview_metrics['third_title'], $overview_metrics['third_value'], $overview_metrics['third_meta']);
+        echo '<div class="stats-summary">';
+        echo '<a class="stat-link" href="' . esc_url($subscribers_url) . '">';
+        echo '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.95 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>';
+        echo '<span>' . esc_html($active_count_label) . ' abonnés actifs</span>';
+        echo '</a>';
+        echo '<a class="stat-link" href="' . esc_url($stats_url) . '">';
+        echo '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>';
+        echo '<span>' . esc_html($sent_count_label) . ' emails envoyés</span>';
+        echo '</a>';
+        echo '<a class="stat-link" href="' . esc_url($stats_url) . '">';
+        echo '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 14H6v-2h12v2zm0-4H6V7h2v4h2V7h2v4h2V7h2v6z"/></svg>';
+        echo '<span>' . esc_html($third_count_label) . ' ' . esc_html(mb_strtolower($overview_metrics['third_title'])) . '</span>';
+        echo '</a>';
         echo '</div>';
-        echo '<div class="wppk-wp-dashboard-widget__charts">';
-        echo $this->render_dual_line_chart_card(
-            'Progression des abonnes',
-            '5 derniers jours',
-            $growth_primary,
-            $growth_secondary,
-            'Actifs',
-            'Désinscrits',
-            'wppk-chart-card--widget'
-        );
-        echo $this->render_line_chart_card(
-            'Sending messages',
-            is_array($aws_sending_data) ? '5 derniers jours AWS SES' : '5 derniers jours',
-            $series,
-            'wppk-chart-card--widget'
-        );
+
+        echo '<div class="chart-section">';
+        echo '<div class="chart-title">Progression des abonnés</div>';
+        echo '<div class="wppk-widget__canvas-box">';
+        echo '<canvas class="wppk-widget-canvas wppk-widget-canvas--growth" data-labels="' . esc_attr(wp_json_encode($growth_labels)) . '" data-primary="' . esc_attr(wp_json_encode($growth_primary_values)) . '" data-secondary="' . esc_attr(wp_json_encode($growth_secondary_values)) . '"></canvas>';
         echo '</div>';
-        echo '<p><a class="button button-primary" href="' . esc_url(admin_url('admin.php?page=wppk-newsletter')) . '">Ouvrir WP PK Newsletter</a></p>';
         echo '</div>';
+
+        echo '<div class="chart-section">';
+        echo '<div class="chart-title">Sending messages</div>';
+        echo '<div class="wppk-widget__subcaption">' . esc_html(is_array($aws_sending_data) ? '5 derniers jours AWS SES' : '5 derniers jours') . '</div>';
+        echo '<div class="wppk-widget__canvas-box">';
+        echo '<canvas class="wppk-widget-canvas wppk-widget-canvas--sending" data-labels="' . esc_attr(wp_json_encode($sending_labels)) . '" data-values="' . esc_attr(wp_json_encode($sending_values)) . '"></canvas>';
+        echo '</div>';
+        echo '</div>';
+
+        echo '<div class="promo-block">Pilote rapidement ton digest quotidien, tes abonnés et les métriques AWS SES sans quitter le tableau de bord. <a href="' . esc_url($dashboard_url) . '">Ouvrir le dashboard plugin ↗</a></div>';
+
+        echo '<div class="quick-links">';
+        echo '<h4>Liens rapides</h4>';
+        echo '<ul class="links-grid">';
+        echo '<li><a href="' . esc_url($dashboard_url) . '">Ouvrir le dashboard plugin</a></li>';
+        echo '<li><a href="' . esc_url($subscribers_url) . '">Gérer les abonnés</a></li>';
+        echo '<li><a href="' . esc_url($stats_url) . '">Voir les statistiques</a></li>';
+        echo '<li><a href="' . esc_url($settings_url) . '">Réglages de la newsletter</a></li>';
+        echo '</ul>';
+        echo '</div>';
+        echo '</div>';
+        echo '</div>';
+    }
+
+    public function render_wp_dashboard_widget_script(): void
+    {
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+        if (!$screen || $screen->id !== 'dashboard') {
+            return;
+        }
+        ?>
+        <script>
+            (function() {
+                if (typeof Chart === "undefined") {
+                    return;
+                }
+
+                const baseAxis = {
+                    y: {
+                        beginAtZero: true,
+                        ticks: { color: "#a7aaad" },
+                        grid: { color: "#f0f0f1" }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: "#1d2327" }
+                    }
+                };
+
+                document.querySelectorAll(".wppk-widget-canvas--growth").forEach(function(canvas) {
+                    if (canvas.dataset.bound === "1") {
+                        return;
+                    }
+                    canvas.dataset.bound = "1";
+
+                    new Chart(canvas.getContext("2d"), {
+                        type: "line",
+                        data: {
+                            labels: JSON.parse(canvas.dataset.labels || "[]"),
+                            datasets: [
+                                {
+                                    label: "Tous",
+                                    data: JSON.parse(canvas.dataset.primary || "[]"),
+                                    borderColor: "#3858e9",
+                                    backgroundColor: "#3858e9",
+                                    borderWidth: 2,
+                                    pointRadius: 0,
+                                    tension: 0.2
+                                },
+                                {
+                                    label: "Désinscrits",
+                                    data: JSON.parse(canvas.dataset.secondary || "[]"),
+                                    borderColor: "#e17000",
+                                    backgroundColor: "#e17000",
+                                    borderWidth: 2,
+                                    pointRadius: 0,
+                                    tension: 0.2
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    position: "bottom",
+                                    labels: {
+                                        usePointStyle: true,
+                                        pointStyle: "circle",
+                                        boxWidth: 8,
+                                        padding: 20
+                                    }
+                                }
+                            },
+                            scales: baseAxis
+                        }
+                    });
+                });
+
+                document.querySelectorAll(".wppk-widget-canvas--sending").forEach(function(canvas) {
+                    if (canvas.dataset.bound === "1") {
+                        return;
+                    }
+                    canvas.dataset.bound = "1";
+
+                    new Chart(canvas.getContext("2d"), {
+                        type: "line",
+                        data: {
+                            labels: JSON.parse(canvas.dataset.labels || "[]"),
+                            datasets: [
+                                {
+                                    label: "Emails envoyés",
+                                    data: JSON.parse(canvas.dataset.values || "[]"),
+                                    borderColor: "#3858e9",
+                                    backgroundColor: "#3858e9",
+                                    borderWidth: 2,
+                                    pointRadius: 0,
+                                    tension: 0.2
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false }
+                            },
+                            scales: baseAxis
+                        }
+                    });
+                });
+            })();
+        </script>
+        <?php
     }
 
     private function get_recent_subscribers(int $limit = 6): array
@@ -3329,6 +3490,126 @@ final class WPPK_Newsletter
                 <?php endforeach; ?>
                 <?php foreach ($secondaryPoints as $point) : ?>
                     <circle cx="<?php echo esc_attr((string) $point['x']); ?>" cy="<?php echo esc_attr((string) $point['y']); ?>" r="<?php echo esc_attr($compact ? '2.5' : '3.5'); ?>" class="wppk-chart__point wppk-chart__point--secondary" />
+                <?php endforeach; ?>
+            </svg>
+        </div>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    private function render_widget_line_chart(array $series): string
+    {
+        if (!$series) {
+            return '<p>Aucune donnee.</p>';
+        }
+
+        $width = 760;
+        $height = 180;
+        $paddingLeft = 20;
+        $paddingRight = 12;
+        $paddingTop = 12;
+        $paddingBottom = 26;
+        $plotWidth = $width - $paddingLeft - $paddingRight;
+        $plotHeight = $height - $paddingTop - $paddingBottom;
+        $values = array_map(static fn($point) => (int) ($point['value'] ?? 0), $series);
+        $max = max($values);
+        $max = $max > 0 ? $max : 1;
+        $count = count($series);
+
+        $points = [];
+        foreach ($series as $index => $point) {
+            $x = $paddingLeft + ($count > 1 ? ($plotWidth / ($count - 1)) * $index : $plotWidth / 2);
+            $y = $paddingTop + $plotHeight - (((int) $point['value'] / $max) * $plotHeight);
+            $points[] = [
+                'x' => $x,
+                'y' => $y,
+                'label' => (string) $point['label'],
+            ];
+        }
+
+        $ticks = [];
+        for ($i = 0; $i < 4; $i++) {
+            $y = $paddingTop + ($plotHeight / 3) * $i;
+            $ticks[] = $y;
+        }
+
+        ob_start();
+        ?>
+        <div class="wppk-widget-chart-shell">
+            <svg viewBox="0 0 <?php echo esc_attr((string) $width); ?> <?php echo esc_attr((string) $height); ?>" class="wppk-widget-chart" role="img" aria-label="Historique des emails envoyés">
+                <?php foreach ($ticks as $tick_y) : ?>
+                    <line x1="<?php echo esc_attr((string) $paddingLeft); ?>" y1="<?php echo esc_attr((string) $tick_y); ?>" x2="<?php echo esc_attr((string) ($paddingLeft + $plotWidth)); ?>" y2="<?php echo esc_attr((string) $tick_y); ?>" class="wppk-widget-chart__grid" />
+                <?php endforeach; ?>
+                <polyline points="<?php echo esc_attr(implode(' ', array_map(static fn($point) => round($point['x'], 2) . ',' . round($point['y'], 2), $points))); ?>" class="wppk-widget-chart__line is-primary" />
+                <?php foreach ($points as $point) : ?>
+                    <circle cx="<?php echo esc_attr((string) round($point['x'], 2)); ?>" cy="<?php echo esc_attr((string) round($point['y'], 2)); ?>" r="3" class="wppk-widget-chart__point is-primary" />
+                    <text x="<?php echo esc_attr((string) round($point['x'], 2)); ?>" y="<?php echo esc_attr((string) ($height - 8)); ?>" text-anchor="middle" class="wppk-widget-chart__label"><?php echo esc_html($point['label']); ?></text>
+                <?php endforeach; ?>
+            </svg>
+        </div>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    private function render_widget_dual_chart(array $primarySeries, array $secondarySeries): string
+    {
+        if (!$primarySeries || !$secondarySeries) {
+            return '<p>Aucune donnee.</p>';
+        }
+
+        $width = 760;
+        $height = 180;
+        $paddingLeft = 20;
+        $paddingRight = 12;
+        $paddingTop = 12;
+        $paddingBottom = 26;
+        $plotWidth = $width - $paddingLeft - $paddingRight;
+        $plotHeight = $height - $paddingTop - $paddingBottom;
+        $allValues = array_merge(
+            array_map(static fn($point) => (int) ($point['value'] ?? 0), $primarySeries),
+            array_map(static fn($point) => (int) ($point['value'] ?? 0), $secondarySeries)
+        );
+        $max = max($allValues);
+        $max = $max > 0 ? $max : 1;
+        $count = count($primarySeries);
+
+        $build_points = static function (array $series) use ($count, $paddingLeft, $plotWidth, $paddingTop, $plotHeight, $max): array {
+            $points = [];
+            foreach ($series as $index => $point) {
+                $x = $paddingLeft + ($count > 1 ? ($plotWidth / ($count - 1)) * $index : $plotWidth / 2);
+                $y = $paddingTop + $plotHeight - (((int) $point['value'] / $max) * $plotHeight);
+                $points[] = [
+                    'x' => $x,
+                    'y' => $y,
+                    'label' => (string) $point['label'],
+                ];
+            }
+            return $points;
+        };
+
+        $primaryPoints = $build_points($primarySeries);
+        $secondaryPoints = $build_points($secondarySeries);
+        $ticks = [];
+        for ($i = 0; $i < 4; $i++) {
+            $y = $paddingTop + ($plotHeight / 3) * $i;
+            $ticks[] = $y;
+        }
+
+        ob_start();
+        ?>
+        <div class="wppk-widget-chart-shell">
+            <svg viewBox="0 0 <?php echo esc_attr((string) $width); ?> <?php echo esc_attr((string) $height); ?>" class="wppk-widget-chart" role="img" aria-label="Progression des abonnés">
+                <?php foreach ($ticks as $tick_y) : ?>
+                    <line x1="<?php echo esc_attr((string) $paddingLeft); ?>" y1="<?php echo esc_attr((string) $tick_y); ?>" x2="<?php echo esc_attr((string) ($paddingLeft + $plotWidth)); ?>" y2="<?php echo esc_attr((string) $tick_y); ?>" class="wppk-widget-chart__grid" />
+                <?php endforeach; ?>
+                <polyline points="<?php echo esc_attr(implode(' ', array_map(static fn($point) => round($point['x'], 2) . ',' . round($point['y'], 2), $primaryPoints))); ?>" class="wppk-widget-chart__line is-primary" />
+                <polyline points="<?php echo esc_attr(implode(' ', array_map(static fn($point) => round($point['x'], 2) . ',' . round($point['y'], 2), $secondaryPoints))); ?>" class="wppk-widget-chart__line is-secondary" />
+                <?php foreach ($primaryPoints as $point) : ?>
+                    <circle cx="<?php echo esc_attr((string) round($point['x'], 2)); ?>" cy="<?php echo esc_attr((string) round($point['y'], 2)); ?>" r="3" class="wppk-widget-chart__point is-primary" />
+                    <text x="<?php echo esc_attr((string) round($point['x'], 2)); ?>" y="<?php echo esc_attr((string) ($height - 8)); ?>" text-anchor="middle" class="wppk-widget-chart__label"><?php echo esc_html($point['label']); ?></text>
+                <?php endforeach; ?>
+                <?php foreach ($secondaryPoints as $point) : ?>
+                    <circle cx="<?php echo esc_attr((string) round($point['x'], 2)); ?>" cy="<?php echo esc_attr((string) round($point['y'], 2)); ?>" r="3" class="wppk-widget-chart__point is-secondary" />
                 <?php endforeach; ?>
             </svg>
         </div>
