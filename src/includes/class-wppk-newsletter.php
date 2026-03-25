@@ -29,6 +29,8 @@ final class WPPK_Newsletter
         add_action('admin_init', [$instance, 'register_settings']);
         add_action('admin_menu', [$instance, 'register_admin_page']);
         add_action('admin_enqueue_scripts', [$instance, 'enqueue_admin_assets']);
+        add_action('wp_dashboard_setup', [$instance, 'register_wp_dashboard_widget']);
+        add_action('admin_bar_menu', [$instance, 'register_admin_bar_node'], 90);
         add_action('admin_post_wppk_subscribe', [$instance, 'handle_subscribe']);
         add_action('admin_post_nopriv_wppk_subscribe', [$instance, 'handle_subscribe']);
         add_action('admin_post_wppk_add_subscriber', [$instance, 'handle_admin_add_subscriber']);
@@ -64,11 +66,15 @@ final class WPPK_Newsletter
 
     public function enqueue_admin_assets(string $hook): void
     {
-        if ($hook !== 'toplevel_page_wppk-newsletter') {
+        if (!in_array($hook, ['toplevel_page_wppk-newsletter', 'index.php'], true)) {
             return;
         }
 
         wp_enqueue_style('wppk-newsletter-admin');
+        if ($hook === 'index.php') {
+            return;
+        }
+
         wp_enqueue_style('wp-color-picker');
         wp_enqueue_script('wp-color-picker');
         wp_add_inline_script(
@@ -96,6 +102,35 @@ final class WPPK_Newsletter
                 });
             });"
         );
+    }
+
+    public function register_wp_dashboard_widget(): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        wp_add_dashboard_widget(
+            'wppk_newsletter_dashboard_widget',
+            'WP PK Newsletter',
+            [$this, 'render_wp_dashboard_widget']
+        );
+    }
+
+    public function register_admin_bar_node(WP_Admin_Bar $admin_bar): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        $admin_bar->add_node([
+            'id' => 'wppk-newsletter',
+            'title' => '<span class="ab-icon dashicons dashicons-email-alt2" style="font: normal 18px/1 dashicons; top: 2px;"></span>',
+            'href' => admin_url('admin.php?page=wppk-newsletter'),
+            'meta' => [
+                'title' => 'Ouvrir WP PK Newsletter',
+            ],
+        ]);
     }
 
     public function activate(): void
@@ -1688,6 +1723,43 @@ final class WPPK_Newsletter
         echo '</div>';
     }
 
+    public function render_wp_dashboard_widget(): void
+    {
+        $overview_metrics = $this->get_dashboard_overview_metrics();
+        $aws_sending_data = $this->get_aws_ses_sending_data('week');
+        $sending_summary = $this->get_stats_dashboard_data('week');
+        $growth = $this->get_subscriber_growth_data('day');
+        $growth_primary = array_slice($growth['subscribed_series'] ?? [], -5);
+        $growth_secondary = array_slice($growth['unsubscribed_series'] ?? [], -5);
+        $series = array_slice(is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $sending_summary['sending_series'], -5);
+
+        echo '<div class="wppk-wp-dashboard-widget">';
+        echo '<div class="wppk-stat-grid wppk-stat-grid--dashboard">';
+        echo $this->render_stat_card(__('Abonnes actifs', 'wppknewsletter'), $overview_metrics['active_value'], $overview_metrics['active_meta']);
+        echo $this->render_stat_card(__('Emails envoyes', 'wppknewsletter'), $overview_metrics['sent_value'], $overview_metrics['sent_meta']);
+        echo $this->render_stat_card($overview_metrics['third_title'], $overview_metrics['third_value'], $overview_metrics['third_meta']);
+        echo '</div>';
+        echo '<div class="wppk-wp-dashboard-widget__charts">';
+        echo $this->render_dual_line_chart_card(
+            'Progression des abonnes',
+            '5 derniers jours',
+            $growth_primary,
+            $growth_secondary,
+            'Actifs',
+            'Désinscrits',
+            'wppk-chart-card--widget'
+        );
+        echo $this->render_line_chart_card(
+            'Sending messages',
+            is_array($aws_sending_data) ? '5 derniers jours AWS SES' : '5 derniers jours',
+            $series,
+            'wppk-chart-card--widget'
+        );
+        echo '</div>';
+        echo '<p><a class="button button-primary" href="' . esc_url(admin_url('admin.php?page=wppk-newsletter')) . '">Ouvrir WP PK Newsletter</a></p>';
+        echo '</div>';
+    }
+
     private function get_recent_subscribers(int $limit = 6): array
     {
         global $wpdb;
@@ -1727,9 +1799,10 @@ final class WPPK_Newsletter
         $third_meta = __('7 derniers jours', 'wppknewsletter');
 
         $aws_quota = $this->get_aws_ses_stats();
+        $aws_sent_last_24h = $this->get_aws_ses_last_24_hours_total();
 
         if (is_array($aws_quota)) {
-            $sent_value = number_format_i18n($aws_quota['sent_last_24_hours'], 0);
+            $sent_value = number_format_i18n((int) ($aws_sent_last_24h ?? $aws_quota['sent_last_24_hours']), 0);
         } else {
             $summary = $this->get_stats_dashboard_data('day');
             $sent_value = number_format_i18n((int) ($summary['emails_total'] ?? 0), 0);
@@ -1737,7 +1810,7 @@ final class WPPK_Newsletter
         }
 
         if (is_array($aws_quota)) {
-            $quota_remaining = max(0, (int) round($aws_quota['max_24_hour_send'] - $aws_quota['sent_last_24_hours']));
+            $quota_remaining = max(0, (int) round($aws_quota['max_24_hour_send'] - (int) ($aws_sent_last_24h ?? $aws_quota['sent_last_24_hours'])));
             $third_title = __('Quota restant', 'wppknewsletter');
             $third_value = number_format_i18n($quota_remaining, 0);
             $third_meta = __('AWS SES, 24h glissantes', 'wppknewsletter');
@@ -1862,6 +1935,32 @@ final class WPPK_Newsletter
         set_transient($cache_key, $result['SendDataPoints'], 5 * MINUTE_IN_SECONDS);
 
         return $result['SendDataPoints'];
+    }
+
+    private function get_aws_ses_last_24_hours_total(): ?int
+    {
+        $raw_points = $this->get_aws_ses_send_statistics_raw();
+        if (!is_array($raw_points) || !$raw_points) {
+            return null;
+        }
+
+        $cutoff = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify('-24 hours');
+        $total = 0;
+
+        foreach ($raw_points as $point) {
+            if (empty($point['Timestamp'])) {
+                continue;
+            }
+
+            $timestamp = new DateTimeImmutable((string) $point['Timestamp']);
+            if ($timestamp < $cutoff) {
+                continue;
+            }
+
+            $total += (int) round((float) ($point['DeliveryAttempts'] ?? 0));
+        }
+
+        return $total;
     }
 
     private function get_aws_ses_sending_data(string $range): ?array
@@ -2300,14 +2399,16 @@ final class WPPK_Newsletter
         if ($tab === 'stats') {
             $summary = $this->get_stats_dashboard_data('day');
             $aws_ses_stats = $this->get_aws_ses_stats();
+            $aws_sent_last_24h = $this->get_aws_ses_last_24_hours_total();
 
             if (is_array($aws_ses_stats)) {
-                $quota_remaining = max(0, (int) round($aws_ses_stats['max_24_hour_send'] - $aws_ses_stats['sent_last_24_hours']));
+                $sent_last_24h = (int) ($aws_sent_last_24h ?? $aws_ses_stats['sent_last_24_hours']);
+                $quota_remaining = max(0, (int) round($aws_ses_stats['max_24_hour_send'] - $sent_last_24h));
 
                 return [
                     [
                         'title' => __('Emails envoyés', 'wppknewsletter'),
-                        'value' => number_format_i18n($aws_ses_stats['sent_last_24_hours'], 0),
+                        'value' => number_format_i18n($sent_last_24h, 0),
                         'meta' => __('AWS SES, dernières 24h', 'wppknewsletter'),
                     ],
                     [
@@ -2414,6 +2515,7 @@ final class WPPK_Newsletter
         $summary = $this->get_stats_dashboard_data($range);
         $aws_ses_stats = $this->get_aws_ses_stats();
         $aws_sending_data = is_array($aws_ses_stats) ? $this->get_aws_ses_sending_data($range) : null;
+        $aws_sent_last_24h = is_array($aws_ses_stats) ? $this->get_aws_ses_last_24_hours_total() : null;
 
         echo '<div class="wppk-stats-toolbar">';
         echo '<div class="wppk-stats-range">';
@@ -2426,10 +2528,11 @@ final class WPPK_Newsletter
 
         echo '<div class="wppk-stat-grid wppk-stat-grid--compact" style="margin-top:8px;">';
         if (is_array($aws_ses_stats)) {
-            $quota_remaining = max(0, (int) round($aws_ses_stats['max_24_hour_send'] - $aws_ses_stats['sent_last_24_hours']));
+            $sent_last_24h = (int) ($aws_sent_last_24h ?? $aws_ses_stats['sent_last_24_hours']);
+            $quota_remaining = max(0, (int) round($aws_ses_stats['max_24_hour_send'] - $sent_last_24h));
             $month_emails = $this->get_current_month_email_total();
             $estimated_cost = $this->format_estimated_ses_cost((float) $month_emails);
-            echo $this->render_stat_card(__('Emails envoyes', 'wppknewsletter'), number_format_i18n($aws_ses_stats['sent_last_24_hours'], 0), __('AWS SES, dernieres 24h', 'wppknewsletter'));
+            echo $this->render_stat_card(__('Emails envoyes', 'wppknewsletter'), number_format_i18n($sent_last_24h, 0), __('AWS SES, dernieres 24h', 'wppknewsletter'));
             echo $this->render_stat_card(__('Quota restant', 'wppknewsletter'), number_format_i18n($quota_remaining, 0), __('AWS SES, fenetre glissante 24h', 'wppknewsletter'));
             echo $this->render_stat_card(__('Debit max', 'wppknewsletter'), number_format_i18n($aws_ses_stats['max_send_rate'], 0) . '/s', sprintf(__('AWS SES, region %s', 'wppknewsletter'), strtoupper($aws_ses_stats['region'])));
             echo $this->render_stat_card(__('Cout estime', 'wppknewsletter'), $estimated_cost, sprintf(__('Mois en cours (%s) · Base SES 0,10 USD / 1 000 emails', 'wppknewsletter'), number_format_i18n($month_emails, 0)));

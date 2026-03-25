@@ -152,6 +152,20 @@ body.toplevel_page_wppk-newsletter #wpfooter {
   border-radius: 18px;
 }
 
+.wppk-wp-dashboard-widget {
+  display: grid;
+  gap: 16px;
+}
+
+.wppk-wp-dashboard-widget__charts {
+  display: grid;
+  gap: 14px;
+}
+
+.wppk-wp-dashboard-widget__charts .wppk-chart-card {
+  margin: 0;
+}
+
 .wppk-log-badge {
   display: inline-flex;
   align-items: center;
@@ -398,6 +412,22 @@ body.toplevel_page_wppk-newsletter #wpfooter {
 
 .wppk-chart-card--mini .wppk-chart-legend__item {
   font-size: 11px;
+}
+
+.wppk-chart-card--widget {
+  padding: 16px 18px 12px;
+}
+
+.wppk-chart-card--widget .wppk-chart-card__header {
+  margin-bottom: 12px;
+}
+
+.wppk-chart-card--widget .wppk-stats-section-title {
+  font-size: 15px;
+}
+
+.wppk-chart-card--widget .wppk-chart-card__caption {
+  font-size: 12px;
 }
 
 .wppk-chart-card__caption {
