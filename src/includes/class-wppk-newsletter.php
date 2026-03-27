@@ -15,6 +15,8 @@ final class WPPK_Newsletter
     private const EVENT_LOG_OPTION = 'wppk_newsletter_event_logs';
     private const DIGEST_LOCK_OPTION = 'wppk_newsletter_digest_lock';
     private const DIGEST_SENT_OPTION_PREFIX = 'wppk_newsletter_digest_sent_';
+    private const LANDING_PAGE_ID_OPTION = 'wppk_newsletter_landing_page_id';
+    private const LANDING_PAGE_TEMPLATE = 'wppknewsletter/newsletter-landing.php';
 
     public static function boot(): void
     {
@@ -27,6 +29,8 @@ final class WPPK_Newsletter
         add_action('init', [$instance, 'handle_unsubscribe']);
         add_action('init', [$instance, 'handle_confirmation']);
         add_action('init', [$instance, 'maybe_send_scheduled_digest_on_request'], 20);
+        add_filter('theme_page_templates', [$instance, 'register_page_templates'], 20, 4);
+        add_filter('template_include', [$instance, 'load_plugin_page_template'], 99);
         add_action('admin_init', [$instance, 'maybe_upgrade']);
         add_action('admin_init', [$instance, 'register_settings']);
         add_action('admin_menu', [$instance, 'register_admin_page']);
@@ -149,6 +153,7 @@ final class WPPK_Newsletter
         $this->register_settings();
         update_option('wppk_newsletter_db_version', WPPKNEWSLETTER_VERSION, false);
         $this->ensure_cron_schedule();
+        $this->maybe_create_landing_page();
     }
 
     public function deactivate(): void
@@ -166,6 +171,7 @@ final class WPPK_Newsletter
         }
 
         $this->ensure_cron_schedule();
+        $this->maybe_create_landing_page();
     }
 
     public function add_cron_schedule(array $schedules): array
@@ -181,6 +187,69 @@ final class WPPK_Newsletter
     public function register_shortcode(): void
     {
         add_shortcode('wppk_newsletter_form', [$this, 'render_form_shortcode']);
+        add_shortcode('wppk_newsletter_landing', [$this, 'render_landing_shortcode']);
+    }
+
+    public function register_page_templates(array $post_templates, $theme = null, $post = null, $post_type = null): array
+    {
+        $post_templates[self::LANDING_PAGE_TEMPLATE] = __('Newsletter Landing (WP PK Newsletter)', 'wppknewsletter');
+        return $post_templates;
+    }
+
+    public function load_plugin_page_template(string $template): string
+    {
+        if (!is_singular('page')) {
+            return $template;
+        }
+
+        $page_id = get_queried_object_id();
+        if (!$page_id) {
+            return $template;
+        }
+
+        $selected = get_page_template_slug($page_id);
+        if ($selected !== self::LANDING_PAGE_TEMPLATE) {
+            return $template;
+        }
+
+        $plugin_template = trailingslashit(WPPKNEWSLETTER_PATH) . 'templates/newsletter-landing.php';
+        if (!file_exists($plugin_template)) {
+            return $template;
+        }
+
+        return $plugin_template;
+    }
+
+    private function maybe_create_landing_page(): void
+    {
+        // Keep this conservative: don't mutate an existing page. Only create if missing.
+        $existing_id = absint(get_option(self::LANDING_PAGE_ID_OPTION, 0));
+        if ($existing_id > 0 && get_post_status($existing_id)) {
+            return;
+        }
+
+        $by_path = get_page_by_path('newsletter', OBJECT, 'page');
+        if ($by_path instanceof WP_Post) {
+            update_option(self::LANDING_PAGE_ID_OPTION, (int) $by_path->ID, false);
+            return;
+        }
+
+        $page_id = wp_insert_post([
+            'post_title' => 'Newsletter',
+            'post_name' => 'newsletter',
+            'post_type' => 'page',
+            'post_status' => 'publish',
+            'post_content' => '[wppk_newsletter_landing]',
+            'comment_status' => 'closed',
+            'ping_status' => 'closed',
+        ], true);
+
+        if (is_wp_error($page_id) || !$page_id) {
+            return;
+        }
+
+        update_option(self::LANDING_PAGE_ID_OPTION, (int) $page_id, false);
+        update_post_meta((int) $page_id, '_wp_page_template', self::LANDING_PAGE_TEMPLATE);
     }
 
     public function register_settings(): void
@@ -373,6 +442,247 @@ final class WPPK_Newsletter
                 <button type="submit" class="wppk-form__button"><?php esc_html_e('S’abonner', 'wppknewsletter'); ?></button>
             </form>
         </div>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    public function render_landing_shortcode(array $atts = []): string
+    {
+        wp_enqueue_style('wppk-newsletter-form');
+
+        $settings = $this->get_settings();
+        $stats = $this->get_stats();
+        $brand_name = trim(str_replace('📌', '', (string) ($settings['brand_name'] ?? get_bloginfo('name'))));
+        $action = esc_url(admin_url('admin-post.php'));
+        $status = sanitize_key($_GET['wppk_status'] ?? '');
+
+        $notice = '';
+        $notice_class = 'is-neutral';
+        if ($status === 'confirmation_sent') {
+            $notice = 'Vérifie ta boîte mail pour confirmer ton inscription.';
+            $notice_class = 'is-success';
+        } elseif ($status === 'confirmation_resent') {
+            $notice = 'Un nouveau mail de confirmation vient d’être envoyé.';
+            $notice_class = 'is-success';
+        } elseif ($status === 'subscribed') {
+            $notice = 'Inscription confirmée. Bienvenue.';
+            $notice_class = 'is-success';
+        } elseif ($status === 'exists') {
+            $notice = 'Cette adresse est déjà inscrite.';
+        } elseif ($status === 'invalid') {
+            $notice = 'Adresse email invalide.';
+            $notice_class = 'is-error';
+        } elseif ($status === 'confirmation_failed') {
+            $notice = 'Impossible d’envoyer le mail de confirmation pour le moment.';
+            $notice_class = 'is-error';
+        } elseif ($status === 'confirmation_invalid') {
+            $notice = 'Lien de confirmation invalide ou expiré.';
+            $notice_class = 'is-error';
+        }
+
+        $active = (int) ($stats['active'] ?? 0);
+        $posts_today = (int) ($stats['posts_today'] ?? 0);
+        $send_time = sprintf('%02d:%02d', (int) ($settings['daily_hour'] ?? 17), (int) ($settings['daily_minute'] ?? 0));
+
+        ob_start();
+        ?>
+        <style>
+            :root {
+                --wppk-bg: #ffffff;
+                --wppk-panel: #ffffff;
+                --wppk-text: #111111;
+                --wppk-muted: #666666;
+                --wppk-line: rgba(17, 17, 17, 0.08);
+                --wppk-accent: #2f80ed;
+                --wppk-accent-dark: #1f6fdc;
+                --wppk-radius-xl: 28px;
+                --wppk-radius-lg: 20px;
+                --wppk-radius-md: 14px;
+                --wppk-shadow: 0 18px 40px rgba(17, 17, 17, 0.06);
+            }
+
+            .wppk-newsletter-page,
+            .wppk-newsletter-page * {
+                box-sizing: border-box;
+            }
+
+            .wppk-newsletter-page {
+                padding: 48px 20px;
+                background: var(--wppk-bg);
+                color: var(--wppk-text);
+                font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }
+
+            .wppk-newsletter-shell {
+                width: min(760px, 100%);
+                margin: 0 auto;
+            }
+
+            .wppk-newsletter-panel {
+                border: 1px solid var(--wppk-line);
+                border-radius: var(--wppk-radius-xl);
+                background: var(--wppk-panel);
+                box-shadow: var(--wppk-shadow);
+                padding: 48px;
+            }
+
+            .wppk-newsletter-kicker {
+                display: inline-flex;
+                align-items: center;
+                gap: 10px;
+                margin-bottom: 22px;
+                color: var(--wppk-muted);
+                font-size: 12px;
+                font-weight: 700;
+                letter-spacing: .14em;
+                text-transform: uppercase;
+            }
+
+            .wppk-newsletter-kicker::before {
+                content: "";
+                width: 28px;
+                height: 1px;
+                background: currentColor;
+                opacity: .55;
+            }
+
+            .wppk-newsletter-title {
+                margin: 0 0 20px;
+                max-width: 620px;
+                font-family: Georgia, "Times New Roman", serif;
+                font-size: clamp(42px, 6vw, 72px);
+                line-height: .96;
+                letter-spacing: -.05em;
+                font-weight: 700;
+            }
+
+            .wppk-newsletter-lead {
+                max-width: 640px;
+                margin: 0;
+                color: var(--wppk-muted);
+                font-size: 18px;
+                line-height: 1.65;
+            }
+
+            .wppk-newsletter-metrics {
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 12px;
+                margin-top: 34px;
+            }
+
+            .wppk-newsletter-metric {
+                padding: 18px;
+                border: 1px solid var(--wppk-line);
+                border-radius: var(--wppk-radius-lg);
+                background: #ffffff;
+            }
+
+            .wppk-newsletter-metric strong {
+                display: block;
+                margin-bottom: 6px;
+                font-size: 28px;
+                line-height: 1;
+                font-weight: 800;
+                letter-spacing: -.04em;
+            }
+
+            .wppk-newsletter-metric span {
+                color: var(--wppk-muted);
+                font-size: 12px;
+                line-height: 1.5;
+                text-transform: uppercase;
+                letter-spacing: .12em;
+                font-weight: 700;
+            }
+
+            .wppk-newsletter-notice {
+                margin-top: 18px;
+                padding: 14px 16px;
+                border: 1px solid var(--wppk-line);
+                border-radius: var(--wppk-radius-md);
+                font-size: 13px;
+                line-height: 1.55;
+                font-weight: 600;
+            }
+
+            .wppk-newsletter-notice.is-success {
+                color: #0b8a4d;
+                background: rgba(0, 182, 94, 0.08);
+                border-color: rgba(0, 182, 94, 0.16);
+            }
+
+            .wppk-newsletter-notice.is-error {
+                color: #9b1c1c;
+                background: rgba(185, 28, 28, 0.06);
+                border-color: rgba(185, 28, 28, 0.15);
+            }
+
+            .wppk-newsletter-form {
+                display: grid;
+                gap: 12px;
+                margin-top: 34px;
+            }
+
+            .wppk-newsletter-form input[type="email"] {
+                width: 100%;
+                min-height: 54px;
+                padding: 0 16px;
+                border: 1px solid var(--wppk-line);
+                border-radius: var(--wppk-radius-md);
+                background: #ffffff;
+                color: var(--wppk-text);
+                font-size: 16px;
+            }
+
+            .wppk-newsletter-form button {
+                width: 100%;
+                min-height: 54px;
+                border: 0;
+                border-radius: var(--wppk-radius-md);
+                background: var(--wppk-accent);
+                color: #ffffff;
+                font-weight: 800;
+                letter-spacing: .02em;
+                cursor: pointer;
+            }
+
+            .wppk-newsletter-form button:hover {
+                background: var(--wppk-accent-dark);
+            }
+
+            @media (max-width: 980px) {
+                .wppk-newsletter-panel { padding: 34px 22px; }
+                .wppk-newsletter-metrics { grid-template-columns: 1fr; }
+            }
+        </style>
+        <section class="wppk-newsletter-page">
+            <div class="wppk-newsletter-shell">
+                <div class="wppk-newsletter-panel">
+                    <div class="wppk-newsletter-kicker"><?php echo esc_html($brand_name); ?></div>
+                    <h1 class="wppk-newsletter-title">Digest quotidien</h1>
+                    <p class="wppk-newsletter-lead">Un email propre, compact et visuel avec les publications du jour. Inscris-toi et reçois la sélection chaque jour à <?php echo esc_html($send_time); ?>.</p>
+
+                    <div class="wppk-newsletter-metrics">
+                        <div class="wppk-newsletter-metric"><strong><?php echo esc_html(number_format_i18n($active)); ?></strong><span>Abonnés actifs</span></div>
+                        <div class="wppk-newsletter-metric"><strong><?php echo esc_html(number_format_i18n($posts_today)); ?></strong><span>Posts aujourd’hui</span></div>
+                        <div class="wppk-newsletter-metric"><strong><?php echo esc_html($send_time); ?></strong><span>Heure d’envoi</span></div>
+                    </div>
+
+                    <?php if ($notice) : ?>
+                        <div class="wppk-newsletter-notice <?php echo esc_attr($notice_class); ?>"><?php echo esc_html($notice); ?></div>
+                    <?php endif; ?>
+
+                    <form method="post" action="<?php echo $action; ?>" class="wppk-newsletter-form">
+                        <input type="hidden" name="action" value="wppk_subscribe">
+                        <?php wp_nonce_field('wppk_subscribe'); ?>
+                        <label class="screen-reader-text" for="wppk_landing_email"><?php esc_html_e('Email', 'wppknewsletter'); ?></label>
+                        <input id="wppk_landing_email" type="email" name="email" placeholder="vous@exemple.com" required>
+                        <button type="submit">S’abonner</button>
+                    </form>
+                </div>
+            </div>
+        </section>
         <?php
         return (string) ob_get_clean();
     }
