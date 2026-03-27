@@ -9,22 +9,22 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-get_header();
+?><!doctype html>
+<html <?php language_attributes(); ?>>
+<head>
+    <meta charset="<?php bloginfo('charset'); ?>">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <?php wp_head(); ?>
+</head>
+<body <?php body_class('wppknewsletter-standalone-landing'); ?>>
+<?php
+wp_body_open();
 
-while (have_posts()) {
-    the_post();
-    $content = get_the_content();
-    $content = is_string($content) ? trim($content) : '';
+// Render only the landing itself. This intentionally bypasses the theme's header/footer
+// to avoid extra menus/widgets/sections on the newsletter landing page.
+echo do_shortcode('[wppk_newsletter_landing]');
 
-    // Always render the plugin landing on this template, even if the page content is empty.
-    echo do_shortcode('[wppk_newsletter_landing]');
-
-    // Optional: if the editor added extra content (FAQ, legal, etc.), render it below.
-    if ($content !== '' && stripos($content, 'wppk_newsletter_landing') === false) {
-        echo '<div class="wppk-newsletter-page-content">';
-        the_content();
-        echo '</div>';
-    }
-}
-
-get_footer();
+wp_footer();
+?>
+</body>
+</html>
