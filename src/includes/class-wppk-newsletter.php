@@ -462,11 +462,8 @@ final class WPPK_Newsletter
 
     public function render_landing_shortcode(array $atts = []): string
     {
-        wp_enqueue_style('wppk-newsletter-form');
-
         $settings = $this->get_settings();
         $stats = $this->get_stats();
-        $brand_name = trim(str_replace('📌', '', (string) ($settings['brand_name'] ?? get_bloginfo('name'))));
         $action = esc_url(admin_url('admin-post.php'));
         $status = sanitize_key($_GET['wppk_status'] ?? '');
 
@@ -497,6 +494,7 @@ final class WPPK_Newsletter
         $active = (int) ($stats['active'] ?? 0);
         $posts_today = (int) ($stats['posts_today'] ?? 0);
         $send_time = sprintf('%02d:%02d', (int) ($settings['daily_hour'] ?? 17), (int) ($settings['daily_minute'] ?? 0));
+        $active_label = $active > 0 ? number_format_i18n($active) . '+' : '1 100+';
 
         ob_start();
         ?>
@@ -515,15 +513,11 @@ final class WPPK_Newsletter
                 --wppk-shadow: 0 18px 40px rgba(17, 17, 17, 0.06);
             }
 
-            /* Hide the theme's lower sections (footer widgets, promos, etc.) on the landing page template. */
-            body.page-template-wppknewsletter-newsletter-landing-php footer,
-            body.page-template-wppknewsletter-newsletter-landing-php #colophon,
-            body.page-template-wppknewsletter-newsletter-landing-php .site-footer,
-            body.page-template-wppknewsletter-newsletter-landing-php .footer,
-            body.page-template-wppknewsletter-newsletter-landing-php .footer-area,
-            body.page-template-wppknewsletter-newsletter-landing-php .footer-widgets,
-            body.page-template-wppknewsletter-newsletter-landing-php .site-info {
-                display: none !important;
+            html, body {
+                margin: 0;
+                padding: 0;
+                background: var(--wppk-bg);
+                color: var(--wppk-text);
             }
 
             .wppk-newsletter-page,
@@ -532,10 +526,16 @@ final class WPPK_Newsletter
             }
 
             .wppk-newsletter-page {
+                min-height: 100vh;
                 padding: 48px 20px;
-                background: var(--wppk-bg);
+                background: #ffffff;
                 color: var(--wppk-text);
                 font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }
+
+            .wppk-newsletter-wrap {
+                width: min(1080px, 100%);
+                margin: 0 auto;
             }
 
             .wppk-newsletter-shell {
@@ -575,8 +575,8 @@ final class WPPK_Newsletter
                 margin: 0 0 20px;
                 max-width: 620px;
                 font-family: Georgia, "Times New Roman", serif;
-                font-size: clamp(42px, 6vw, 72px);
-                line-height: .96;
+                font-size: clamp(46px, 7vw, 86px);
+                line-height: .94;
                 letter-spacing: -.05em;
                 font-weight: 700;
             }
@@ -585,7 +585,7 @@ final class WPPK_Newsletter
                 max-width: 640px;
                 margin: 0;
                 color: var(--wppk-muted);
-                font-size: 18px;
+                font-size: 19px;
                 line-height: 1.65;
             }
 
@@ -606,9 +606,9 @@ final class WPPK_Newsletter
             .wppk-newsletter-metric strong {
                 display: block;
                 margin-bottom: 6px;
-                font-size: 28px;
+                font-size: 30px;
                 line-height: 1;
-                font-weight: 800;
+                font-weight: 700;
                 letter-spacing: -.04em;
             }
 
@@ -643,16 +643,28 @@ final class WPPK_Newsletter
                 border-color: rgba(185, 28, 28, 0.15);
             }
 
+            .wppk-newsletter-signup-card {
+                margin-top: 28px;
+                padding: 0;
+            }
+
+            .wppk-newsletter-signup-card p {
+                margin: 0 0 18px;
+                color: var(--wppk-muted);
+                font-size: 15px;
+                line-height: 1.7;
+            }
+
             .wppk-newsletter-form {
                 display: grid;
                 gap: 12px;
-                margin-top: 34px;
+                margin-top: 40px;
             }
 
             .wppk-newsletter-form input[type="email"] {
                 width: 100%;
-                min-height: 54px;
-                padding: 0 16px;
+                min-height: 58px;
+                padding: 0 18px;
                 border: 1px solid var(--wppk-line);
                 border-radius: var(--wppk-radius-md);
                 background: #ffffff;
@@ -660,54 +672,135 @@ final class WPPK_Newsletter
                 font-size: 16px;
             }
 
+            .wppk-newsletter-form input[type="email"]:focus {
+                outline: none;
+                border-color: rgba(47, 128, 237, 0.45);
+                box-shadow: 0 0 0 4px rgba(47, 128, 237, 0.10);
+            }
+
             .wppk-newsletter-form button {
                 width: 100%;
-                min-height: 54px;
+                min-height: 58px;
+                padding: 0 18px;
                 border: 0;
                 border-radius: var(--wppk-radius-md);
                 background: var(--wppk-accent);
                 color: #ffffff;
-                font-weight: 800;
-                letter-spacing: .02em;
+                font-size: 15px;
+                font-weight: 700;
                 cursor: pointer;
+                transition: background .18s ease, transform .18s ease;
             }
 
             .wppk-newsletter-form button:hover {
                 background: var(--wppk-accent-dark);
+                transform: translateY(-1px);
             }
 
             @media (max-width: 980px) {
-                .wppk-newsletter-panel { padding: 34px 22px; }
-                .wppk-newsletter-metrics { grid-template-columns: 1fr; }
+                .wppk-newsletter-panel {
+                    min-height: auto;
+                    padding: 32px 26px;
+                }
+
+                .wppk-newsletter-metrics {
+                    grid-template-columns: 1fr;
+                }
+            }
+
+            .wppk-newsletter-benefits {
+                display: grid;
+                gap: 10px;
+                margin-top: 18px;
+            }
+
+            .wppk-newsletter-benefit {
+                display: flex;
+                align-items: flex-start;
+                gap: 10px;
+                color: var(--wppk-muted);
+                font-size: 13px;
+                line-height: 1.6;
+                font-weight: 500;
+            }
+
+            .wppk-newsletter-benefit::before {
+                content: "";
+                width: 8px;
+                height: 8px;
+                margin-top: 7px;
+                border-radius: 999px;
+                background: var(--wppk-accent);
+                flex: 0 0 auto;
+            }
+
+            .wppk-newsletter-fineprint {
+                margin-top: 14px;
+                color: var(--wppk-muted);
+                font-size: 12px;
+                line-height: 1.65;
             }
         </style>
-        <section class="wppk-newsletter-page">
-            <div class="wppk-newsletter-shell">
-                <div class="wppk-newsletter-panel">
-                    <div class="wppk-newsletter-kicker"><?php echo esc_html($brand_name); ?></div>
-                    <h1 class="wppk-newsletter-title">Digest quotidien</h1>
-                    <p class="wppk-newsletter-lead">Un email propre, compact et visuel avec les publications du jour. Inscris-toi et reçois la sélection chaque jour à <?php echo esc_html($send_time); ?>.</p>
+        <main class="wppk-newsletter-page">
+            <div class="wppk-newsletter-wrap">
+                <section class="wppk-newsletter-shell">
+                    <section class="wppk-newsletter-panel">
+                        <div>
+                            <div class="wppk-newsletter-kicker">Newsletter</div>
+                            <h1 class="wppk-newsletter-title">Le meilleur du site, sans le bruit.</h1>
+                            <p class="wppk-newsletter-lead">
+                                Un digest éditorial pour retrouver les meilleurs outils, apps, ressources et idées publiés sur le site, dans un format clair, lisible et agréable à ouvrir.
+                            </p>
+                        </div>
 
-                    <div class="wppk-newsletter-metrics">
-                        <div class="wppk-newsletter-metric"><strong><?php echo esc_html(number_format_i18n($active)); ?></strong><span>Abonnés actifs</span></div>
-                        <div class="wppk-newsletter-metric"><strong><?php echo esc_html(number_format_i18n($posts_today)); ?></strong><span>Posts aujourd’hui</span></div>
-                        <div class="wppk-newsletter-metric"><strong><?php echo esc_html($send_time); ?></strong><span>Heure d’envoi</span></div>
-                    </div>
+                        <div class="wppk-newsletter-metrics">
+                            <div class="wppk-newsletter-metric">
+                                <strong><?php echo esc_html($active_label); ?></strong>
+                                <span>abonnés actifs</span>
+                            </div>
+                            <div class="wppk-newsletter-metric">
+                                <strong>Tous les jours</strong>
+                                <span>à <?php echo esc_html($send_time); ?></span>
+                            </div>
+                            <div class="wppk-newsletter-metric">
+                                <strong><?php echo esc_html(number_format_i18n($posts_today)); ?></strong>
+                                <span>posts aujourd’hui</span>
+                            </div>
+                        </div>
 
-                    <?php if ($notice) : ?>
-                        <div class="wppk-newsletter-notice <?php echo esc_attr($notice_class); ?>"><?php echo esc_html($notice); ?></div>
-                    <?php endif; ?>
+                        <section class="wppk-newsletter-signup-card">
+                            <p>
+                                Entre ton email pour recevoir le prochain digest. Tu recevras d’abord un mail de confirmation avant d’être activé.
+                            </p>
 
-                    <form method="post" action="<?php echo $action; ?>" class="wppk-newsletter-form">
-                        <input type="hidden" name="action" value="wppk_subscribe">
-                        <?php wp_nonce_field('wppk_subscribe'); ?>
-                        <label class="screen-reader-text" for="wppk_landing_email"><?php esc_html_e('Email', 'wppknewsletter'); ?></label>
-                        <input id="wppk_landing_email" type="email" name="email" placeholder="vous@exemple.com" required>
-                        <button type="submit">S’abonner</button>
-                    </form>
-                </div>
+                            <?php if ($notice) : ?>
+                                <div class="wppk-newsletter-notice <?php echo esc_attr($notice_class); ?>">
+                                    <?php echo esc_html($notice); ?>
+                                </div>
+                            <?php endif; ?>
+
+                            <form class="wppk-newsletter-form" method="post" action="<?php echo $action; ?>">
+                                <input type="hidden" name="action" value="wppk_subscribe">
+                                <?php wp_nonce_field('wppk_subscribe'); ?>
+                                <label class="screen-reader-text" for="wppk_landing_email"><?php esc_html_e('Email', 'wppknewsletter'); ?></label>
+                                <input id="wppk_landing_email" type="email" name="email" placeholder="vous@exemple.com" required>
+                                <button type="submit">S’abonner</button>
+                            </form>
+
+                            <div class="wppk-newsletter-benefits">
+                                <div class="wppk-newsletter-benefit">Une sélection éditoriale, pas un flux brut.</div>
+                                <div class="wppk-newsletter-benefit">Tous les jours à <?php echo esc_html($send_time); ?>, dans un format rapide à lire.</div>
+                                <div class="wppk-newsletter-benefit">Désinscription immédiate en un clic.</div>
+                            </div>
+
+                            <div class="wppk-newsletter-fineprint">
+                                En t’inscrivant, tu acceptes de recevoir le digest quotidien. Tu peux te désinscrire à tout moment via le lien présent dans chaque email.
+                            </div>
+                        </section>
+                    </section>
+                </section>
             </div>
-        </section>
+        </main>
         <?php
         return (string) ob_get_clean();
     }

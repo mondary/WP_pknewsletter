@@ -14,17 +14,13 @@ if (!defined('ABSPATH')) {
 <head>
     <meta charset="<?php bloginfo('charset'); ?>">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <?php wp_head(); ?>
+    <title><?php echo esc_html(get_the_title()); ?></title>
 </head>
-<body <?php body_class('wppknewsletter-standalone-landing'); ?>>
+<body class="wppknewsletter-standalone-landing">
 <?php
-wp_body_open();
-
-// Render only the landing itself. This intentionally bypasses the theme's header/footer
-// to avoid extra menus/widgets/sections on the newsletter landing page.
+// Fully standalone on purpose: no wp_head()/wp_footer() so the theme and plugins
+// cannot inject headers/footers/ads/widgets into this landing page.
 echo do_shortcode('[wppk_newsletter_landing]');
-
-wp_footer();
 ?>
 </body>
 </html>
