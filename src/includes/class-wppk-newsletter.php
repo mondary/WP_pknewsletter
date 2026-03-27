@@ -13,6 +13,8 @@ final class WPPK_Newsletter
     private const IMPORT_REPORT_TRANSIENT = 'wppk_import_report';
     private const AWS_STATS_TRANSIENT = 'wppk_aws_ses_stats';
     private const EVENT_LOG_OPTION = 'wppk_newsletter_event_logs';
+    private const DIGEST_LOCK_OPTION = 'wppk_newsletter_digest_lock';
+    private const DIGEST_SENT_OPTION_PREFIX = 'wppk_newsletter_digest_sent_';
 
     public static function boot(): void
     {
@@ -232,6 +234,11 @@ final class WPPK_Newsletter
             $postsPerDigest = (int) ($existing['posts_per_digest'] ?? $defaults['posts_per_digest']);
         }
 
+        $batchSize = absint($input['digest_batch_size'] ?? 0);
+        if ($batchSize <= 0) {
+            $batchSize = (int) ($existing['digest_batch_size'] ?? $defaults['digest_batch_size']);
+        }
+
         $introText = wp_kses_post($input['intro_text'] ?? $defaults['intro_text']);
         $introText = $this->normalize_intro_text($introText);
 
@@ -246,7 +253,9 @@ final class WPPK_Newsletter
             'email_layout' => $this->sanitize_email_layout($input['email_layout'] ?? $defaults['email_layout']),
             'email_theme' => $this->sanitize_email_theme($input['email_theme'] ?? $defaults['email_theme']),
             'daily_hour' => min(23, max(0, absint($input['daily_hour'] ?? $defaults['daily_hour']))),
+            'daily_minute' => min(59, max(0, absint($input['daily_minute'] ?? $defaults['daily_minute']))),
             'posts_per_digest' => min(20, max(1, $postsPerDigest)),
+            'digest_batch_size' => min(500, max(1, $batchSize)),
             'subject' => $subject,
             'intro_text' => $introText,
             'footer_text' => wp_kses_post($input['footer_text'] ?? $defaults['footer_text']),
@@ -555,7 +564,69 @@ final class WPPK_Newsletter
         }
 
         check_admin_referer('wppk_send_digest_now');
-        $result = $this->send_digest_to_active_subscribers(true);
+        $today = current_datetime()->format('Y-m-d');
+        $audience = $this->get_active_audience();
+        $campaign_option = $this->get_digest_sent_option_name($today, $audience);
+        $settings = $this->get_settings();
+        $campaign = $this->get_digest_campaign_payload($campaign_option);
+
+        if ($this->is_digest_campaign_sent($campaign)) {
+            $result = [
+                'sent' => 0,
+                'reason' => sprintf('Digest déjà envoyé aujourd’hui sur %s. Envoi manuel bloqué pour éviter un doublon.', strtoupper($audience)),
+            ];
+        } elseif ($campaign) {
+            $result = [
+                'sent' => 0,
+                'reason' => sprintf('Une campagne est déjà en cours aujourd’hui sur %s (%d/%d).', strtoupper($audience), (int) ($campaign['processed_total'] ?? 0), (int) ($campaign['total'] ?? 0)),
+            ];
+        } elseif (!$this->acquire_digest_send_lock()) {
+            $result = [
+                'sent' => 0,
+                'reason' => 'Un envoi est déjà en cours. Réessaie dans un instant.',
+            ];
+        } else {
+            try {
+                $campaign = $this->get_digest_campaign_payload($campaign_option);
+                if ($this->is_digest_campaign_sent($campaign)) {
+                    $result = [
+                        'sent' => 0,
+                        'reason' => sprintf('Digest déjà envoyé aujourd’hui sur %s. Envoi manuel bloqué pour éviter un doublon.', strtoupper($audience)),
+                    ];
+                } elseif ($campaign) {
+                    $result = [
+                        'sent' => 0,
+                        'reason' => sprintf('Une campagne est déjà en cours aujourd’hui sur %s (%d/%d).', strtoupper($audience), (int) ($campaign['processed_total'] ?? 0), (int) ($campaign['total'] ?? 0)),
+                    ];
+                } else {
+                    $campaign = $this->start_digest_campaign($campaign_option, $today, $audience, 'manual', $settings);
+                    if (!$campaign) {
+                        $result = [
+                            'sent' => 0,
+                            'reason' => sprintf('Digest déjà en cours ou déjà réservé aujourd’hui sur %s.', strtoupper($audience)),
+                        ];
+                    } else {
+                        $batch = $this->send_digest_campaign_batch($campaign_option, $campaign, $settings, true);
+                        if (!empty($batch['aborted'])) {
+                            $result = [
+                                'sent' => 0,
+                                'reason' => (string) ($batch['reason'] ?? 'Envoi stoppé.'),
+                            ];
+                        } else {
+                        $result = [
+                            'sent' => (int) ($batch['sent_total'] ?? 0),
+                            'reason' => !empty($batch['done'])
+                                ? sprintf('Campagne terminée (%d/%d).', (int) ($batch['processed_total'] ?? 0), (int) ($batch['total'] ?? 0))
+                                : sprintf('Campagne en cours (%d/%d).', (int) ($batch['processed_total'] ?? 0), (int) ($batch['total'] ?? 0)),
+                        ];
+                        }
+                    }
+                }
+            } finally {
+                $this->release_digest_send_lock();
+            }
+        }
+
         $args = [
             'page' => 'wppk-newsletter',
             'wppk_sent' => $result['sent'],
@@ -1149,37 +1220,67 @@ final class WPPK_Newsletter
         }
         $now = current_datetime();
         $today = $now->format('Y-m-d');
-        $last_sent = get_option('wppk_newsletter_last_sent_date', '');
-        $current_hm = (int) $now->format('Hi');
-        $lock_key = 'wppk_digest_send_lock';
+        $audience = $this->get_active_audience();
+        $campaign_option = $this->get_digest_sent_option_name($today, $audience);
+        $settings = $this->get_settings();
+        $campaign = $this->get_digest_campaign_payload($campaign_option);
 
-        if ($current_hm < 1410 || $current_hm > 2000) {
+        if ($this->is_digest_campaign_sent($campaign)) {
+            $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : digest déjà envoyé aujourd’hui sur %s', $source, strtoupper($audience)));
+            return;
+        }
+
+        if (
+            !$campaign
+            && !$this->is_now_in_digest_start_window(
+                $now,
+                (int) ($settings['daily_hour'] ?? 14),
+                (int) ($settings['daily_minute'] ?? 0)
+            )
+        ) {
             $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : hors fenêtre (%s)', $source, $now->format('H:i')));
             return;
         }
 
-        if ($last_sent === $today) {
-            $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : digest déjà envoyé aujourd’hui', $source));
+        if (!$this->acquire_digest_send_lock()) {
+            $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : un envoi est déjà en cours', $source));
             return;
         }
 
-        if (get_transient($lock_key)) {
-            $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : verrou actif', $source));
-            return;
-        }
+        try {
+            $campaign = $this->get_digest_campaign_payload($campaign_option);
+            if ($this->is_digest_campaign_sent($campaign)) {
+                $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré après verrou : digest déjà envoyé aujourd’hui sur %s', $source, strtoupper($audience)));
+                return;
+            }
 
-        $this->log_event('cron', 'ok', sprintf('Déclenchement %s OK, tentative d’envoi', $source));
-        set_transient($lock_key, '1', 15 * MINUTE_IN_SECONDS);
-        update_option('wppk_newsletter_last_sent_date', $today, false);
+            if (!$campaign) {
+                $campaign = $this->start_digest_campaign($campaign_option, $today, $audience, $source, $settings);
+                if (!$campaign) {
+                    $this->log_event('cron', 'skip', sprintf('Déclenchement %s ignoré : campagne déjà réservée aujourd’hui sur %s', $source, strtoupper($audience)));
+                    return;
+                }
+            }
 
-        $result = $this->send_digest_to_active_subscribers(false);
-        if (($result['sent'] ?? 0) <= 0) {
-            update_option('wppk_newsletter_last_sent_date', '', false);
-            $this->log_event('cron', 'warn', sprintf('Envoi stoppé : %s', (string) ($result['reason'] ?? 'raison inconnue')));
-        } else {
-            $this->log_event('cron', 'ok', sprintf('Envoi exécuté : %d emails', (int) ($result['sent'] ?? 0)));
+            $result = $this->send_digest_campaign_batch($campaign_option, $campaign, $settings, false);
+            if (!empty($result['aborted'])) {
+                $this->log_event('cron', 'warn', sprintf('Envoi stoppé : %s', (string) ($result['reason'] ?? 'raison inconnue')));
+                return;
+            }
+            if (!empty($result['done'])) {
+                $this->mark_digest_campaign_sent($campaign_option, array_merge($this->get_digest_campaign_payload($campaign_option) ?: [], [
+                    'status' => 'sent',
+                    'finished_at' => current_time('mysql', true),
+                ]));
+                update_option('wppk_newsletter_last_sent_date', $today, false);
+                $this->log_send((int) ($result['sent_total'] ?? 0), (int) ($result['posts_count'] ?? 0));
+                $this->log_event('cron', 'ok', sprintf('Envoi terminé : %d/%d (ok=%d)', (int) ($result['processed_total'] ?? 0), (int) ($result['total'] ?? 0), (int) ($result['sent_total'] ?? 0)));
+            } else {
+                $this->log_event('cron', 'ok', sprintf('Batch %s: %d/%d (ok=%d)', strtoupper($audience), (int) ($result['processed_total'] ?? 0), (int) ($result['total'] ?? 0), (int) ($result['sent_total'] ?? 0)));
+            }
+        } finally {
+            $this->release_digest_send_lock();
         }
-        delete_transient($lock_key);
     }
 
     public function maybe_send_scheduled_digest_on_request(): void
@@ -1324,9 +1425,11 @@ final class WPPK_Newsletter
                                     <div class="wppk-settings-grid">
                                         <div class="wppk-field"><label for="email_layout">Mise en forme du digest</label><select name="<?php echo esc_attr(self::OPTION_KEY); ?>[email_layout]" id="email_layout"><?php foreach ($this->get_email_layout_options() as $layout_key => $layout_label) : ?><option value="<?php echo esc_attr($layout_key); ?>" <?php selected($settings['email_layout'], $layout_key); ?>><?php echo esc_html($layout_label); ?></option><?php endforeach; ?></select><p class="description">Choisit la structure visuelle de l’email. Le changement recharge la preview.</p></div>
                                         <div class="wppk-field"><label for="email_theme">Thème de l’email</label><select name="<?php echo esc_attr(self::OPTION_KEY); ?>[email_theme]" id="email_theme"><?php foreach ($this->get_email_theme_options() as $theme_key => $theme_label) : ?><option value="<?php echo esc_attr($theme_key); ?>" <?php selected($settings['email_theme'], $theme_key); ?>><?php echo esc_html($theme_label); ?></option><?php endforeach; ?></select><p class="description">Affecte les fonds, bordures et contrastes dans la preview et l’envoi réel. Le changement recharge la preview.</p></div>
-                                        <div class="wppk-field wppk-field--span-2"><label>&nbsp;</label><p class="description wppk-settings-guide">Reading List = hero éditorial inspiré de ton mock. Cards = grandes cartes. List + thumbnails = liste compacte illustrée. Editorial = premier article hero puis liste. Compact = digest dense. Briefing = version plus textuelle premium. Magazine grid = grille 2 colonnes.</p></div>
+                                        <div class="wppk-field wppk-field--span-2"><label>&nbsp;</label><p class="description wppk-settings-guide">Reading List = hero éditorial inspiré de ton mock. Cards = grandes cartes. List + thumbnails = liste compacte illustrée. Editorial = premier article hero puis liste. Compact = digest dense. Briefing = version plus textuelle premium. Magazine grid = grille 2 colonnes (peut rester en 2 colonnes sur mobile selon le client). Magazine responsive = grille hybride qui empile en mobile, y compris quand les media queries sont ignorées.</p></div>
                                         <div class="wppk-field wppk-field--span-2"><label for="subject">Sujet</label><input name="<?php echo esc_attr(self::OPTION_KEY); ?>[subject]" id="subject" type="text" value="<?php echo esc_attr($settings['subject']); ?>"><p class="description">Utilise %date% pour afficher la date du jour dans l’objet.</p></div>
                                         <div class="wppk-field"><label for="daily_hour">Heure quotidienne</label><input type="number" min="0" max="23" name="<?php echo esc_attr(self::OPTION_KEY); ?>[daily_hour]" id="daily_hour" value="<?php echo esc_attr((string) $settings['daily_hour']); ?>"></div>
+                                        <div class="wppk-field"><label for="daily_minute">Minute quotidienne</label><input type="number" min="0" max="59" name="<?php echo esc_attr(self::OPTION_KEY); ?>[daily_minute]" id="daily_minute" value="<?php echo esc_attr((string) ($settings['daily_minute'] ?? 0)); ?>"><p class="description">Ex: 30 pour démarrer à 14:30.</p></div>
+                                        <div class="wppk-field"><label for="digest_batch_size">Batch size</label><input type="number" min="1" max="500" name="<?php echo esc_attr(self::OPTION_KEY); ?>[digest_batch_size]" id="digest_batch_size" value="<?php echo esc_attr((string) ($settings['digest_batch_size'] ?? 150)); ?>"><p class="description">Nombre d’emails envoyés par tick (cron minute). Plus haut = plus rapide, mais plus risqué en timeout/throttle.</p></div>
                                         <div class="wppk-field wppk-field--span-3 wppk-field-group">
                                             <label>Contenu du digest</label>
                                             <div class="wppk-field-group__grid">
@@ -1658,6 +1761,24 @@ final class WPPK_Newsletter
         echo $this->render_stat_card(__('Abonnes actifs', 'wppknewsletter'), $overview_metrics['active_value'], $overview_metrics['active_meta']);
         echo $this->render_stat_card(__('Emails envoyes', 'wppknewsletter'), $overview_metrics['sent_value'], $overview_metrics['sent_meta']);
         echo $this->render_stat_card($overview_metrics['third_title'], $overview_metrics['third_value'], $overview_metrics['third_meta']);
+        $campaign_value = '—';
+        $campaign_meta = 'Aucune campagne en cours.';
+        $today = current_datetime()->format('Y-m-d');
+        $campaign_option = $this->get_digest_sent_option_name($today, $active_audience);
+        $campaign = $this->get_digest_campaign_payload($campaign_option);
+        if ($this->is_digest_campaign_sent($campaign)) {
+            $total = (int) ($campaign['total'] ?? 0);
+            $sent_total = (int) ($campaign['sent_total'] ?? ($campaign['sent'] ?? 0));
+            $campaign_value = $total > 0 ? sprintf('%d/%d', $total, $total) : 'OK';
+            $campaign_meta = $sent_total > 0 ? sprintf('Terminé (ok=%d).', $sent_total) : 'Terminé.';
+        } elseif (is_array($campaign)) {
+            $processed = (int) ($campaign['processed_total'] ?? 0);
+            $total = (int) ($campaign['total'] ?? 0);
+            $sent_total = (int) ($campaign['sent_total'] ?? 0);
+            $campaign_value = $total > 0 ? sprintf('%d/%d', $processed, $total) : (string) $processed;
+            $campaign_meta = sprintf('En cours (ok=%d).', $sent_total);
+        }
+        echo $this->render_stat_card('Campagne du jour', $campaign_value, $campaign_meta);
         echo '</div>';
         echo '</section>';
 
@@ -1697,7 +1818,7 @@ final class WPPK_Newsletter
         );
         echo $this->render_line_chart_card(
             'Envois',
-            is_array($aws_sending_data) ? 'Emails envoyés par AWS SES' : 'Emails envoyés par période',
+            is_array($aws_sending_data) ? 'Emails envoyés par jour via AWS SES' : 'Emails envoyés par jour',
             is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $sending_summary['sending_series'],
             'wppk-chart-card--mini'
         );
@@ -1736,6 +1857,8 @@ final class WPPK_Newsletter
         $overview_metrics = $this->get_dashboard_overview_metrics();
         $aws_sending_data = $this->get_aws_ses_sending_data('week');
         $sending_summary = $this->get_stats_dashboard_data('week');
+        $month_emails = $this->get_current_month_email_total();
+        $estimated_cost = $this->format_estimated_ses_cost((float) $month_emails);
         $growth = $this->get_subscriber_growth_data('day');
         $growth_primary = array_slice($growth['subscribed_series'] ?? [], -5);
         $growth_secondary = array_slice($growth['unsubscribed_series'] ?? [], -5);
@@ -1776,6 +1899,10 @@ final class WPPK_Newsletter
         echo '<a class="stat-link" href="' . esc_url($stats_url) . '">';
         echo '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 14H6v-2h12v2zm0-4H6V7h2v4h2V7h2v4h2V7h2v6z"/></svg>';
         echo '<span>' . esc_html($third_count_label) . ' ' . esc_html(mb_strtolower($overview_metrics['third_title'])) . '</span>';
+        echo '</a>';
+        echo '<a class="stat-link" href="' . esc_url($stats_url) . '">';
+        echo '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 1 21h22L12 2zm1 15h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>';
+        echo '<span>' . esc_html($estimated_cost) . ' coût estimé ce mois</span>';
         echo '</a>';
         echo '</div>';
 
@@ -2132,43 +2259,19 @@ final class WPPK_Newsletter
         }
 
         $tz = wp_timezone();
-        $now = new DateTimeImmutable('now', $tz);
+        $bucket_periods = $this->build_periods($range);
         $buckets = [];
         $recent_logs = [];
 
-        if ($range === 'week') {
-            for ($i = 6; $i >= 0; $i--) {
-                $bucket_time = $now->setTime(0, 0)->modify("-{$i} days");
-                $bucket_key = $bucket_time->format('Y-m-d');
-                $buckets[$bucket_key] = [
-                    'label' => $bucket_time->format('M d'),
-                    'start' => $bucket_time,
-                    'end' => $bucket_time->setTime(23, 59, 59),
-                    'value' => 0,
-                ];
-            }
-        } elseif ($range === 'month') {
-            for ($i = 13; $i >= 0; $i--) {
-                $bucket_time = $now->setTime(0, 0)->modify("-{$i} days");
-                $bucket_key = $bucket_time->format('Y-m-d');
-                $buckets[$bucket_key] = [
-                    'label' => $bucket_time->format('M d'),
-                    'start' => $bucket_time,
-                    'end' => $bucket_time->setTime(23, 59, 59),
-                    'value' => 0,
-                ];
-            }
-        } else {
-            for ($i = 23; $i >= 0; $i--) {
-                $bucket_time = $now->setTime((int) $now->format('H'), 0, 0)->modify("-{$i} hours");
-                $bucket_key = $bucket_time->format('Y-m-d H:00');
-                $buckets[$bucket_key] = [
-                    'label' => $bucket_time->format('H:i'),
-                    'start' => $bucket_time,
-                    'end' => $bucket_time->setTime((int) $bucket_time->format('H'), 59, 59),
-                    'value' => 0,
-                ];
-            }
+        foreach ($bucket_periods as $index => $period) {
+            $start = new DateTimeImmutable((string) $period['start'], new DateTimeZone('UTC'));
+            $end = new DateTimeImmutable((string) $period['end'], new DateTimeZone('UTC'));
+            $buckets[$index] = [
+                'label' => (string) $period['label'],
+                'start' => $start,
+                'end' => $end,
+                'value' => 0,
+            ];
         }
 
         $daily_rollup = [];
@@ -2191,13 +2294,13 @@ final class WPPK_Newsletter
             }
             $daily_rollup[$day_key]['emails_sent'] += $delivery_attempts;
 
-            $bucket_key = $range === 'day'
-                ? $local_time->format('Y-m-d H:00')
-                : $day_key;
-
-            if (isset($buckets[$bucket_key])) {
-                $buckets[$bucket_key]['value'] += $delivery_attempts;
+            foreach ($buckets as &$bucket) {
+                if ($timestamp >= $bucket['start'] && $timestamp <= $bucket['end']) {
+                    $bucket['value'] += $delivery_attempts;
+                    break;
+                }
             }
+            unset($bucket);
         }
 
         foreach (array_reverse($daily_rollup, true) as $row) {
@@ -2714,7 +2817,7 @@ final class WPPK_Newsletter
 
         echo $this->render_line_chart_card(
             'Envois',
-            is_array($aws_sending_data) ? 'Emails envoyes par AWS SES' : 'Emails envoyes par periode',
+            is_array($aws_sending_data) ? 'Emails envoyes par jour via AWS SES' : 'Emails envoyes par jour',
             is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $summary['sending_series']
         );
 
@@ -3904,7 +4007,9 @@ final class WPPK_Newsletter
             'email_layout' => 'reading_list',
             'email_theme' => 'paper',
             'daily_hour' => 18,
+            'daily_minute' => 0,
             'posts_per_digest' => 8,
+            'digest_batch_size' => 150,
             'subject' => 'Digest du jour - %date%',
             'intro_text' => 'Une sélection éditoriale pensée pour aller droit à l’essentiel, sans perdre le relief des bons sujets.',
             'footer_text' => 'Vous recevez cet email car vous etes inscrit au digest quotidien.',
@@ -3931,6 +4036,7 @@ final class WPPK_Newsletter
             'compact' => 'Compact',
             'briefing' => 'Briefing',
             'magazine' => 'Magazine grid',
+            'magazine_hybrid' => 'Magazine responsive',
         ];
     }
 
@@ -4014,6 +4120,235 @@ final class WPPK_Newsletter
     private function is_digest_paused(): bool
     {
         return (bool) get_option('wppk_newsletter_paused', 0);
+    }
+
+    private function get_digest_sent_option_name(string $date, string $audience): string
+    {
+        return self::DIGEST_SENT_OPTION_PREFIX . $date . '_' . $this->sanitize_audience_mode($audience);
+    }
+
+    private function get_digest_campaign_payload(string $option_name): ?array
+    {
+        $value = get_option($option_name, null);
+        return is_array($value) ? $value : null;
+    }
+
+    private function is_digest_campaign_sent(?array $payload): bool
+    {
+        if (!$payload) {
+            return false;
+        }
+
+        // Back-compat: older versions stored payload without a status key.
+        $status = (string) ($payload['status'] ?? '');
+        return $status === '' || $status === 'sent';
+    }
+
+    private function has_digest_campaign_been_sent(string $option_name): bool
+    {
+        return $this->is_digest_campaign_sent($this->get_digest_campaign_payload($option_name));
+    }
+
+    private function mark_digest_campaign_sent(string $option_name, array $payload): void
+    {
+        if (!add_option($option_name, $payload, '', false)) {
+            update_option($option_name, $payload, false);
+        }
+    }
+
+    private function reserve_digest_campaign_send(string $option_name, array $payload): bool
+    {
+        $payload = array_merge(
+            [
+                'status' => 'sending',
+                'reserved_at' => current_time('mysql', true),
+            ],
+            $payload
+        );
+
+        // add_option is atomic. If this succeeds, other triggers will see the option
+        // and stop, preventing double sends for the same day.
+        return add_option($option_name, $payload, '', false);
+    }
+
+    private function start_digest_campaign(string $campaign_option, string $today, string $audience, string $source, array $settings): ?array
+    {
+        $total = $this->count_active_subscribers();
+        if ($total <= 0) {
+            return null;
+        }
+
+        $batch_size = (int) ($settings['digest_batch_size'] ?? 150);
+        $payload = [
+            'status' => 'sending',
+            'date' => $today,
+            'audience' => $audience,
+            'source' => $source,
+            'started_at' => current_time('mysql', true),
+            'updated_at' => current_time('mysql', true),
+            'total' => $total,
+            'batch_size' => min(500, max(1, $batch_size)),
+            'processed_total' => 0,
+            'sent_total' => 0,
+            'last_id' => 0,
+        ];
+
+        if (!$this->reserve_digest_campaign_send($campaign_option, $payload)) {
+            return null;
+        }
+
+        return $this->get_digest_campaign_payload($campaign_option) ?: $payload;
+    }
+
+    private function send_digest_campaign_batch(string $campaign_option, array $campaign, array $settings, bool $force): array
+    {
+        $posts = $this->get_digest_posts();
+        if (!$posts && !$force) {
+            delete_option($campaign_option);
+            return [
+                'aborted' => true,
+                'reason' => 'Aucun post publié aujourd’hui.',
+            ];
+        }
+
+        $total = (int) ($campaign['total'] ?? $this->count_active_subscribers());
+        $batch_size = (int) ($campaign['batch_size'] ?? ($settings['digest_batch_size'] ?? 150));
+        $batch_size = min(500, max(1, $batch_size));
+        $last_id = max(0, (int) ($campaign['last_id'] ?? 0));
+
+        $subscribers = $this->get_active_subscribers_after_id($last_id, $batch_size);
+        if (!$subscribers) {
+            return [
+                'done' => true,
+                'total' => $total,
+                'processed_total' => (int) ($campaign['processed_total'] ?? 0),
+                'sent_total' => (int) ($campaign['sent_total'] ?? 0),
+                'posts_count' => count($posts),
+            ];
+        }
+
+        $subject = $this->render_subject($settings['subject']);
+        $headers = [
+            'Content-Type: text/html; charset=UTF-8',
+            'From: ' . $settings['sender_name'] . ' <' . $settings['sender_email'] . '>',
+        ];
+        if (!empty($settings['reply_to'])) {
+            $headers[] = 'Reply-To: ' . $settings['reply_to'];
+        }
+
+        $processed_count = 0;
+        $sent_ok = 0;
+        $new_last_id = $last_id;
+
+        foreach ($subscribers as $subscriber) {
+            $processed_count++;
+            $new_last_id = max($new_last_id, (int) $subscriber['id']);
+
+            $html = $this->build_email_html($posts, $settings, $subscriber['email'], $subscriber['unsubscribe_token']);
+            if (wp_mail($subscriber['email'], $subject, $html, $headers)) {
+                $sent_ok++;
+            }
+        }
+
+        $payload = array_merge($campaign, [
+            'status' => 'sending',
+            'updated_at' => current_time('mysql', true),
+            'total' => $total,
+            'batch_size' => $batch_size,
+            'last_id' => $new_last_id,
+            'processed_total' => (int) ($campaign['processed_total'] ?? 0) + $processed_count,
+            'sent_total' => (int) ($campaign['sent_total'] ?? 0) + $sent_ok,
+            'last_batch_processed' => $processed_count,
+            'last_batch_sent' => $sent_ok,
+        ]);
+
+        update_option($campaign_option, $payload, false);
+
+        $has_more = (bool) $this->get_active_subscribers_after_id($new_last_id, 1);
+        return [
+            'done' => !$has_more,
+            'total' => $total,
+            'processed_total' => (int) $payload['processed_total'],
+            'sent_total' => (int) $payload['sent_total'],
+            'posts_count' => count($posts),
+        ];
+    }
+
+    private function count_active_subscribers(): int
+    {
+        global $wpdb;
+        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
+        return (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'active' AND confirmed = 1");
+    }
+
+    private function get_active_subscribers_after_id(int $after_id, int $limit): array
+    {
+        global $wpdb;
+        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
+        $limit = min(500, max(1, $limit));
+
+        return $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT id, email, unsubscribe_token
+                 FROM {$table}
+                 WHERE status = 'active' AND confirmed = 1 AND id > %d
+                 ORDER BY id ASC
+                 LIMIT %d",
+                $after_id,
+                $limit
+            ),
+            ARRAY_A
+        ) ?: [];
+    }
+
+    private function is_now_in_digest_start_window($now, int $daily_hour, int $daily_minute = 0): bool
+    {
+        if (!($now instanceof DateTimeInterface)) {
+            return false;
+        }
+
+        $daily_hour = min(23, max(0, $daily_hour));
+        $daily_minute = min(59, max(0, $daily_minute));
+        $start = (clone $now)->setTime($daily_hour, $daily_minute, 0);
+        $end = (clone $start)->modify('+6 hours');
+
+        // Clamp to the end of the day (avoid crossing midnight).
+        if ($end->format('Y-m-d') !== $start->format('Y-m-d')) {
+            $end = (clone $start)->setTime(23, 59, 59);
+        }
+
+        return $now >= $start && $now <= $end;
+    }
+
+    private function acquire_digest_send_lock(): bool
+    {
+        $now = time();
+        $ttl = 6 * HOUR_IN_SECONDS;
+        $lock = get_option(self::DIGEST_LOCK_OPTION, null);
+
+        if (is_array($lock) && !empty($lock['expires_at']) && (int) $lock['expires_at'] > $now) {
+            return false;
+        }
+
+        if ($lock !== null) {
+            delete_option(self::DIGEST_LOCK_OPTION);
+        }
+
+        return add_option(
+            self::DIGEST_LOCK_OPTION,
+            [
+                'token' => wp_generate_password(20, false, false),
+                'expires_at' => $now + $ttl,
+                'created_at' => current_time('mysql', true),
+            ],
+            '',
+            false
+        );
+    }
+
+    private function release_digest_send_lock(): void
+    {
+        delete_option(self::DIGEST_LOCK_OPTION);
     }
 
     private function get_subscribers_table_name(?string $audience = null): string

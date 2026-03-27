@@ -14,3 +14,7 @@ inspi/
 *.log
 *.tmp
 .build/
+.agent
+extensions/*.zip
+extensions/.DS_Store
+icon.png

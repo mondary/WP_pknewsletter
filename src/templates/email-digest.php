@@ -48,6 +48,56 @@ $featured_data = $featured ? $render_post_data($featured) : null;
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?php echo esc_html($site_name); ?></title>
+    <style type="text/css">
+        /* Minimal "email-safe" responsive helpers. Many clients ignore modern CSS
+           like Grid/Flex; this keeps the layout readable on mobile. */
+        img {
+            border: 0;
+            line-height: 100%;
+            outline: none;
+            text-decoration: none;
+            -ms-interpolation-mode: bicubic;
+        }
+
+        table {
+            border-collapse: collapse;
+            mso-table-lspace: 0pt;
+            mso-table-rspace: 0pt;
+        }
+
+        @media screen and (max-width: 600px) {
+            .wppk-stack {
+                display: block !important;
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+
+            .wppk-stack-pad {
+                padding-left: 0 !important;
+                padding-right: 0 !important;
+            }
+
+            .wppk-fluid-img {
+                width: 100% !important;
+                max-width: 100% !important;
+                height: auto !important;
+            }
+
+            .wppk-header-cell {
+                display: block !important;
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+
+            .wppk-header-right {
+                padding-top: 10px !important;
+            }
+
+            .wppk-mobile-center {
+                text-align: center !important;
+            }
+        }
+    </style>
 </head>
 <body style="margin:0;padding:0;background:<?php echo esc_attr($page_bg); ?>;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:<?php echo esc_attr($text); ?>;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:<?php echo esc_attr($page_bg); ?>;">
@@ -58,7 +108,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                         <td style="padding-bottom:18px;">
                             <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                                 <tr>
-                                    <td valign="middle">
+                                    <td class="wppk-header-cell" valign="middle">
                                         <table role="presentation" cellspacing="0" cellpadding="0">
                                             <tr>
                                                 <?php if (!empty($settings['logo_url'])) : ?>
@@ -77,7 +127,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                             </tr>
                                         </table>
                                     </td>
-                                    <td align="right" valign="middle" style="font-size:13px;line-height:1.5;color:<?php echo esc_attr($muted); ?>;">
+                                    <td class="wppk-header-cell wppk-header-right wppk-mobile-center" align="right" valign="middle" style="font-size:13px;line-height:1.5;color:<?php echo esc_attr($muted); ?>;">
                                         <a href="<?php echo esc_url(home_url('/')); ?>" style="color:<?php echo esc_attr($muted); ?>;text-decoration:underline;">Lire sur le blog</a>
                                     </td>
                                 </tr>
@@ -134,11 +184,11 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                     <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                                                         <tr>
                                                             <?php if ($item['thumb']) : ?>
-                                                                <td width="88" valign="top" style="padding-right:14px;">
-                                                                    <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:88px;height:88px;border-radius:3px;object-fit:cover;object-position:top center;">
+                                                                <td class="wppk-stack" width="88" valign="top" style="padding-right:14px;">
+                                                                    <img class="wppk-fluid-img" src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:88px;height:88px;border-radius:3px;object-fit:cover;object-position:top center;">
                                                                 </td>
                                                             <?php endif; ?>
-                                                            <td valign="top">
+                                                            <td class="wppk-stack" valign="top">
                                                                 <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">
                                                                     <?php echo esc_html($item['label']); ?>
                                                                 </div>
@@ -203,7 +253,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                     <?php foreach ($posts as $index => $post) : ?>
                                         <?php $item = $render_post_data($post); ?>
                                         <?php if ($index % 2 === 0) : ?><tr><?php endif; ?>
-                                        <td width="50%" valign="top" style="padding:0 8px 16px 0;">
+                                        <td class="wppk-stack wppk-stack-pad" width="50%" valign="top" style="<?php echo $index % 2 === 0 ? 'padding:0 8px 16px 0;' : 'padding:0 0 16px 8px;'; ?>">
                                             <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:<?php echo esc_attr($panel_bg); ?>;border:1px solid <?php echo esc_attr($panel_border); ?>;border-radius:22px;overflow:hidden;height:100%;">
                                                 <?php if ($item['thumb']) : ?>
                                                     <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:180px;object-fit:cover;object-position:top center;"></td></tr>
@@ -238,24 +288,114 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                 </table>
                             </td>
                         </tr>
+                    <?php elseif ($layout === 'magazine_hybrid') : ?>
+                        <tr>
+                            <td>
+                                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                                    <tr>
+                                        <td align="center" style="padding:0 0 4px 0;font-size:0;">
+                                            <?php foreach ($posts as $index => $post) : ?>
+                                                <?php $item = $render_post_data($post); ?>
+                                                <?php if ($index % 2 === 0) : ?>
+                                                    <!--[if mso]>
+                                                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                                                        <tr>
+                                                            <td width="340" valign="top" style="padding:0 8px 16px 0;">
+                                                    <![endif]-->
+                                                    <div style="display:inline-block;width:100%;max-width:340px;vertical-align:top;">
+                                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                                                            <tr>
+                                                                <td style="padding:0 8px 16px 0;">
+                                                                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:<?php echo esc_attr($panel_bg); ?>;border:1px solid <?php echo esc_attr($panel_border); ?>;border-radius:22px;overflow:hidden;">
+                                                                        <?php if ($item['thumb']) : ?>
+                                                                            <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:180px;object-fit:cover;object-position:top center;"></td></tr>
+                                                                        <?php endif; ?>
+                                                                        <tr>
+                                                                            <td style="padding:18px;">
+                                                                                <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;">
+                                                                                    <?php echo esc_html($item['label']); ?>
+                                                                                </div>
+                                                                                <div style="margin:0 0 8px 0;font-size:20px;line-height:1.25;font-weight:800;color:#111827;">
+                                                                                    <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html(wp_trim_words($item['title'], 11, '…')); ?></a>
+                                                                                </div>
+                                                                                <div style="font-size:14px;line-height:1.7;color:#4b5563;">
+                                                                                    <?php echo esc_html(wp_trim_words($item['excerpt'], 12, '…')); ?>
+                                                                                </div>
+                                                                            </td>
+                                                                        </tr>
+                                                                    </table>
+                                                                </td>
+                                                            </tr>
+                                                        </table>
+                                                    </div>
+                                                    <!--[if mso]>
+                                                            </td>
+                                                            <td width="340" valign="top" style="padding:0 0 16px 8px;">
+                                                    <![endif]-->
+                                                <?php else : ?>
+                                                    <div style="display:inline-block;width:100%;max-width:340px;vertical-align:top;">
+                                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                                                            <tr>
+                                                                <td style="padding:0 0 16px 8px;">
+                                                                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:<?php echo esc_attr($panel_bg); ?>;border:1px solid <?php echo esc_attr($panel_border); ?>;border-radius:22px;overflow:hidden;">
+                                                                        <?php if ($item['thumb']) : ?>
+                                                                            <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:180px;object-fit:cover;object-position:top center;"></td></tr>
+                                                                        <?php endif; ?>
+                                                                        <tr>
+                                                                            <td style="padding:18px;">
+                                                                                <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;">
+                                                                                    <?php echo esc_html($item['label']); ?>
+                                                                                </div>
+                                                                                <div style="margin:0 0 8px 0;font-size:20px;line-height:1.25;font-weight:800;color:#111827;">
+                                                                                    <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html(wp_trim_words($item['title'], 11, '…')); ?></a>
+                                                                                </div>
+                                                                                <div style="font-size:14px;line-height:1.7;color:#4b5563;">
+                                                                                    <?php echo esc_html(wp_trim_words($item['excerpt'], 12, '…')); ?>
+                                                                                </div>
+                                                                            </td>
+                                                                        </tr>
+                                                                    </table>
+                                                                </td>
+                                                            </tr>
+                                                        </table>
+                                                    </div>
+                                                    <!--[if mso]>
+                                                            </td>
+                                                        </tr>
+                                                    </table>
+                                                    <![endif]-->
+                                                <?php endif; ?>
+                                            <?php endforeach; ?>
+                                            <?php if (count($posts) % 2 === 1) : ?>
+                                                <!--[if mso]>
+                                                            </td>
+                                                        </tr>
+                                                    </table>
+                                                <![endif]-->
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </td>
+                        </tr>
                     <?php else : ?>
                         <?php foreach ($posts as $index => $post) : ?>
                             <?php $item = $render_post_data($post); ?>
-                            <?php if ($layout === 'list_thumbs') : ?>
-                                <tr>
-                                    <td style="padding-top:14px;">
-                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:22px;overflow:hidden;">
-                                            <tr>
-                                                <?php if ($item['thumb']) : ?>
-                                                    <td width="220" valign="top" style="background:#f3f4f6;">
-                                                        <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:220px;height:220px;object-fit:cover;object-position:top center;">
-                                                    </td>
-                                                <?php endif; ?>
-                                                <td valign="top" style="padding:18px 20px;">
-                                                    <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;">
-                                                        <?php echo esc_html($item['label']); ?>
-                                                    </div>
-                                                    <div style="margin:0 0 8px 0;font-size:24px;line-height:1.22;font-weight:800;color:#111827;">
+	                            <?php if ($layout === 'list_thumbs') : ?>
+	                                <tr>
+	                                    <td style="padding-top:14px;">
+	                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:22px;overflow:hidden;">
+	                                            <tr>
+	                                                <?php if ($item['thumb']) : ?>
+	                                                    <td class="wppk-stack" width="220" valign="top" style="background:#f3f4f6;">
+	                                                        <img class="wppk-fluid-img" src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:220px;height:220px;object-fit:cover;object-position:top center;">
+	                                                    </td>
+	                                                <?php endif; ?>
+	                                                <td class="wppk-stack" valign="top" style="padding:18px 20px;">
+	                                                    <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;">
+	                                                        <?php echo esc_html($item['label']); ?>
+	                                                    </div>
+	                                                    <div style="margin:0 0 8px 0;font-size:24px;line-height:1.22;font-weight:800;color:#111827;">
                                                         <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
                                                     </div>
                                                     <div style="margin:0 0 14px 0;font-size:14px;line-height:1.75;color:#4b5563;">
@@ -301,53 +441,59 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                         </td>
                                     </tr>
                                 <?php endif; ?>
-                            <?php elseif ($layout === 'compact') : ?>
-                                <tr>
-                                    <td style="padding-top:10px;">
-                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;">
-                                            <tr>
-                                                <td>
-                                                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                                                        <tr>
-                                                            <td valign="top" style="padding:14px 16px;">
-                                                                <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;"><?php echo esc_html($item['label']); ?></div>
-                                                                <div style="margin:0 0 6px 0;font-size:17px;line-height:1.35;font-weight:800;color:#111827;">
-                                                                    <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
-                                                                </div>
-                                                                <div style="font-size:13px;line-height:1.6;color:#6b7280;"><?php echo esc_html(wp_trim_words($item['excerpt'], 18)); ?></div>
-                                                            </td>
-                                                            <?php if ($item['thumb']) : ?>
-                                                                <td width="144" valign="top" style="background:#f3f4f6;">
-                                                                    <img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:144px;height:118px;object-fit:cover;object-position:top center;">
-                                                                </td>
-                                                            <?php endif; ?>
-                                                        </tr>
-                                                    </table>
-                                                </td>
-                                            </tr>
+	                            <?php elseif ($layout === 'compact') : ?>
+	                                <tr>
+	                                    <td style="padding-top:10px;">
+	                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;">
+	                                            <tr>
+	                                                <td>
+	                                                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+	                                                        <tr>
+	                                                            <td class="wppk-stack" valign="top" style="padding:14px 16px;">
+	                                                                <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;"><?php echo esc_html($item['label']); ?></div>
+	                                                                <div style="margin:0 0 6px 0;font-size:17px;line-height:1.35;font-weight:800;color:#111827;">
+	                                                                    <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
+	                                                                </div>
+	                                                                <div style="font-size:13px;line-height:1.6;color:#6b7280;"><?php echo esc_html(wp_trim_words($item['excerpt'], 18)); ?></div>
+	                                                            </td>
+	                                                            <?php if ($item['thumb']) : ?>
+	                                                                <td class="wppk-stack" width="144" valign="top" style="background:#f3f4f6;">
+	                                                                    <img class="wppk-fluid-img" src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:144px;height:118px;object-fit:cover;object-position:top center;">
+	                                                                </td>
+	                                                            <?php endif; ?>
+	                                                        </tr>
+	                                                    </table>
+	                                                </td>
+	                                            </tr>
                                         </table>
                                     </td>
                                 </tr>
-                            <?php else : ?>
-                                <tr>
-                                    <td style="padding-top:14px;">
-                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #ece8df;border-radius:20px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.04);">
+	                            <?php else : ?>
+	                                <tr>
+	                                    <td style="padding-top:14px;">
+	                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #ece8df;border-radius:20px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.04);">
                                             <tr>
                                                 <td style="height:4px;background:<?php echo esc_attr($accent); ?>;"></td>
                                             </tr>
                                             <?php if ($item['thumb']) : ?>
                                                 <tr><td><img src="<?php echo esc_url($item['thumb']); ?>" alt="" style="display:block;width:100%;height:240px;object-fit:cover;object-position:top center;"></td></tr>
                                             <?php endif; ?>
-                                            <tr>
-                                                <td style="padding:22px 22px 20px;">
-                                                    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;">
-                                                        <div style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;"><?php echo esc_html($item['label']); ?></div>
-                                                        <div style="font-size:12px;line-height:1.4;color:#6b7280;"><?php echo esc_html($item['date']); ?></div>
-                                                    </div>
-                                                    <div style="margin:0 0 10px 0;font-size:24px;line-height:1.2;font-weight:800;color:#111827;">
-                                                        <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
-                                                    </div>
-                                                    <div style="margin:0 0 18px 0;font-size:14px;line-height:1.75;color:#4b5563;"><?php echo esc_html(wp_trim_words($item['excerpt'], 22)); ?></div>
+	                                            <tr>
+	                                                <td style="padding:22px 22px 20px;">
+	                                                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:10px;">
+	                                                        <tr>
+	                                                            <td valign="top" style="font-size:11px;line-height:1.4;color:<?php echo esc_attr($accent); ?>;font-weight:800;text-transform:uppercase;letter-spacing:.08em;">
+	                                                                <?php echo esc_html($item['label']); ?>
+	                                                            </td>
+	                                                            <td align="right" valign="top" style="font-size:12px;line-height:1.4;color:#6b7280;">
+	                                                                <?php echo esc_html($item['date']); ?>
+	                                                            </td>
+	                                                        </tr>
+	                                                    </table>
+	                                                    <div style="margin:0 0 10px 0;font-size:24px;line-height:1.2;font-weight:800;color:#111827;">
+	                                                        <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
+	                                                    </div>
+	                                                    <div style="margin:0 0 18px 0;font-size:14px;line-height:1.75;color:#4b5563;"><?php echo esc_html(wp_trim_words($item['excerpt'], 22)); ?></div>
                                                     <table role="presentation" cellspacing="0" cellpadding="0">
                                                         <tr>
                                                             <td style="border-radius:999px;background:#f8fafc;border:1px solid #e5e7eb;">
