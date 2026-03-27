@@ -1,6 +1,6 @@
 <?php
 /**
- * Plugin Name: WP PK Newsletter
+ * Plugin Name: PKnewsletter
  * Plugin URI: https://mondary.design
  * Description: Lightweight daily digest newsletter with subscriber management, follow.it-inspired email cards, and unsubscribe handling.
  * Version: 2.20
