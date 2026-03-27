@@ -494,7 +494,10 @@ final class WPPK_Newsletter
         $active = (int) ($stats['active'] ?? 0);
         $posts_today = (int) ($stats['posts_today'] ?? 0);
         $send_time = sprintf('%02d:%02d', (int) ($settings['daily_hour'] ?? 17), (int) ($settings['daily_minute'] ?? 0));
-        $active_label = $active > 0 ? number_format_i18n($active) . '+' : '1 100+';
+        // Always show real PROD subscriber count on the public landing page,
+        // even if the active audience is DEV for testing.
+        $active_prod = $this->count_active_subscribers_for_audience('prod');
+        $active_label = number_format_i18n($active_prod);
 
         ob_start();
         ?>
@@ -4710,6 +4713,13 @@ final class WPPK_Newsletter
     {
         global $wpdb;
         $table = $this->table_name(self::SUBSCRIBERS_TABLE);
+        return (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'active' AND confirmed = 1");
+    }
+
+    private function count_active_subscribers_for_audience(string $audience): int
+    {
+        global $wpdb;
+        $table = $this->get_subscribers_table_name($audience);
         return (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'active' AND confirmed = 1");
     }
 
