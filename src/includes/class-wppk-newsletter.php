@@ -2821,7 +2821,11 @@ final class WPPK_Newsletter
             is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $summary['sending_series']
         );
 
-        $recent_logs = is_array($aws_sending_data) ? ($aws_sending_data['recent_logs'] ?? []) : $summary['recent_logs'];
+        // Prefer internal logs for "posts_count" (SES stats can't infer it).
+        $recent_logs = $summary['recent_logs'];
+        if (!$recent_logs && is_array($aws_sending_data)) {
+            $recent_logs = $aws_sending_data['recent_logs'] ?? [];
+        }
         if (!empty($recent_logs)) {
             echo '<h3 class="wppk-stats-section-title">Historique recent</h3>';
             echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Emails envoyes</th><th>Posts inclus</th></tr></thead><tbody>';
@@ -2830,7 +2834,7 @@ final class WPPK_Newsletter
                 echo '<tr>';
                 echo '<td>' . esc_html($date_only) . '</td>';
                 echo '<td>' . esc_html($row['emails_sent']) . '</td>';
-                echo '<td>' . esc_html($row['posts_count']) . '</td>';
+                echo '<td>' . esc_html(isset($row['posts_count']) ? (string) $row['posts_count'] : '—') . '</td>';
                 echo '</tr>';
             }
             echo '</tbody></table>';
@@ -3291,7 +3295,7 @@ final class WPPK_Newsletter
         }
 
         $recent_logs = $wpdb->get_results(
-            "SELECT sent_at, emails_sent, posts_count FROM {$log_table} ORDER BY id DESC LIMIT 12",
+            "SELECT sent_at, emails_sent, posts_count FROM {$log_table} ORDER BY sent_at DESC, id DESC LIMIT 12",
             ARRAY_A
         ) ?: [];
 
