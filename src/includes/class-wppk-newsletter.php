@@ -208,7 +208,21 @@ final class WPPK_Newsletter
         }
 
         $selected = get_page_template_slug($page_id);
-        if ($selected !== self::LANDING_PAGE_TEMPLATE) {
+        $force = ($selected === self::LANDING_PAGE_TEMPLATE);
+
+        // If the page exists but the admin template wasn't set (or was reset by the theme),
+        // still force the plugin landing on the canonical /newsletter/ page.
+        $landing_id = absint(get_option(self::LANDING_PAGE_ID_OPTION, 0));
+        if ($landing_id > 0 && $landing_id === (int) $page_id) {
+            $force = true;
+        }
+
+        $slug = get_post_field('post_name', $page_id);
+        if (is_string($slug) && $slug === 'newsletter') {
+            $force = true;
+        }
+
+        if (!$force) {
             return $template;
         }
 
