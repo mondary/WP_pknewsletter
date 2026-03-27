@@ -501,6 +501,17 @@ final class WPPK_Newsletter
                 --wppk-shadow: 0 18px 40px rgba(17, 17, 17, 0.06);
             }
 
+            /* Hide the theme's lower sections (footer widgets, promos, etc.) on the landing page template. */
+            body.page-template-wppknewsletter-newsletter-landing-php footer,
+            body.page-template-wppknewsletter-newsletter-landing-php #colophon,
+            body.page-template-wppknewsletter-newsletter-landing-php .site-footer,
+            body.page-template-wppknewsletter-newsletter-landing-php .footer,
+            body.page-template-wppknewsletter-newsletter-landing-php .footer-area,
+            body.page-template-wppknewsletter-newsletter-landing-php .footer-widgets,
+            body.page-template-wppknewsletter-newsletter-landing-php .site-info {
+                display: none !important;
+            }
+
             .wppk-newsletter-page,
             .wppk-newsletter-page * {
                 box-sizing: border-box;
