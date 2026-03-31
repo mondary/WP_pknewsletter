@@ -18,6 +18,7 @@ final class WPPK_Newsletter
     private const DIGEST_SENT_OPTION_PREFIX = 'wppk_newsletter_digest_sent_';
     private const LANDING_PAGE_ID_OPTION = 'wppk_newsletter_landing_page_id';
     private const LANDING_PAGE_TEMPLATE = 'wppknewsletter/newsletter-landing.php';
+    private const JETPACK_DONT_EMAIL_META = '_jetpack_dont_email_post_to_subs';
 
     public static function boot(): void
     {
@@ -56,6 +57,8 @@ final class WPPK_Newsletter
         add_action('admin_post_wppk_resend_confirmation', [$instance, 'handle_resend_confirmation']);
         add_action('admin_post_wppk_send_test_digest', [$instance, 'handle_send_test_digest']);
         add_action('admin_post_wppk_send_digest_now', [$instance, 'handle_manual_send']);
+        add_action('admin_post_wppk_jetpack_bulk_post_only', [$instance, 'handle_jetpack_bulk_post_only']);
+        add_action('admin_post_wppk_jetpack_set_post_only_all_future', [$instance, 'handle_jetpack_set_post_only_all_future']);
         add_action(self::CRON_HOOK, [$instance, 'maybe_send_scheduled_digest']);
         add_action('phpmailer_init', [$instance, 'configure_phpmailer']);
         add_filter('cron_schedules', [$instance, 'add_cron_schedule']);
@@ -175,6 +178,8 @@ final class WPPK_Newsletter
 
         $this->ensure_cron_schedule();
         $this->maybe_create_landing_page();
+        // Defensive: ensure new tables exist even if db_version was not bumped (or was manually edited).
+        $this->ensure_trash_tables();
     }
 
     public function add_cron_schedule(array $schedules): array
@@ -1959,18 +1964,21 @@ final class WPPK_Newsletter
             'subscribers' => __('Abonnés', 'wppknewsletter'),
             'stats' => __('Statistiques', 'wppknewsletter'),
             'settings' => __('Reglages', 'wppknewsletter'),
+            'jetpack' => __('Jetpack', 'wppknewsletter'),
         ];
         $tab_icons = [
             'dashboard' => 'dashboard',
             'subscribers' => 'groups',
             'stats' => 'chart-bar',
             'settings' => 'admin-generic',
+            'jetpack' => 'admin-plugins',
         ];
         $page_titles = [
             'dashboard' => __('Dashboard', 'wppknewsletter'),
             'settings' => __('Settings', 'wppknewsletter'),
             'subscribers' => __('Abonnés', 'wppknewsletter'),
             'stats' => __('Statistics', 'wppknewsletter'),
+            'jetpack' => __('Jetpack Newsletter', 'wppknewsletter'),
         ];
         if (!isset($tabs[$tab])) {
             $tab = 'dashboard';
@@ -2014,8 +2022,14 @@ final class WPPK_Newsletter
                 <?php if (isset($_GET['wppk_debug'])) : ?>
                     <div class="notice notice-warning"><p><?php echo esc_html(wp_unslash($_GET['wppk_debug'])); ?></p></div>
                 <?php endif; ?>
+                <?php if (isset($_GET['wppk_jetpack_post_only'])) : ?>
+                    <div class="notice notice-success is-dismissible"><p><?php echo esc_html(sprintf('Jetpack: %d post(s) basculé(s) en “Publier uniquement”.', absint($_GET['wppk_jetpack_post_only']))); ?></p></div>
+                <?php endif; ?>
+                <?php if (isset($_GET['wppk_jetpack_post_only_all'])) : ?>
+                    <div class="notice notice-success is-dismissible"><p><?php echo esc_html(sprintf('Jetpack: %d post(s) planifié(s) basculé(s) en “Publier uniquement”.', absint($_GET['wppk_jetpack_post_only_all']))); ?></p></div>
+                <?php endif; ?>
 
-                <?php if ($tab !== 'dashboard' && $tab !== 'stats') : ?>
+                <?php if ($tab !== 'dashboard' && $tab !== 'stats' && $tab !== 'jetpack') : ?>
                 <?php $context_cards = $this->get_contextual_stat_cards($tab, $settings, $stats, $posts); ?>
                 <div class="wppk-stat-grid <?php echo $tab === 'stats' ? 'wppk-stat-grid--compact' : ''; ?>">
                     <?php foreach ($context_cards as $card) : ?>
@@ -2139,19 +2153,304 @@ final class WPPK_Newsletter
                     </div>
                     <?php $this->render_subscribers_table(); ?>
                 </section>
-            <?php elseif ($tab === 'stats') : ?>
-                <section class="wppk-panel">
-                    <div class="wppk-panel__header">
-                        <div>
-                            <h2 class="wppk-panel__title"><?php esc_html_e('Statistiques d\'envoi', 'wppknewsletter'); ?></h2>
+                <?php elseif ($tab === 'stats') : ?>
+                    <section class="wppk-panel">
+                        <div class="wppk-panel__header">
+                            <div>
+                                <h2 class="wppk-panel__title"><?php esc_html_e('Statistiques d\'envoi', 'wppknewsletter'); ?></h2>
+                            </div>
                         </div>
-                    </div>
-                    <?php $this->render_logs_table(); ?>
-                </section>
-            <?php endif; ?>
+                        <?php $this->render_logs_table(); ?>
+                    </section>
+                <?php elseif ($tab === 'jetpack') : ?>
+                    <section class="wppk-panel">
+                        <div class="wppk-panel__header">
+                            <div>
+                                <h2 class="wppk-panel__title"><?php esc_html_e('Jetpack Newsletter', 'wppknewsletter'); ?></h2>
+                                <p class="wppk-panel__copy">Liste les posts planifiés qui sont encore en mode Jetpack “Publier et envoyer par e-mail”, puis bascule-les en “Publier uniquement”.</p>
+                            </div>
+                        </div>
+                        <?php $this->render_jetpack_newsletter_posts_panel(); ?>
+                    </section>
+                <?php endif; ?>
             </div>
         </div>
         <?php
+    }
+
+    private function render_jetpack_newsletter_posts_panel(): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        $dont_email_default = !(bool) get_option('wpcom_newsletter_send_default', true);
+        $page_num = max(1, absint($_GET['jp_page'] ?? 1));
+        $per_page = min(200, max(10, absint($_GET['jp_per_page'] ?? 50)));
+        $search = sanitize_text_field(wp_unslash($_GET['jp_s'] ?? ''));
+
+        $result = $this->get_future_posts_that_will_email_to_subscribers($page_num, $per_page, $search);
+        $posts = $result['posts'];
+        $total = $result['total'];
+
+        echo '<p class="description" style="margin-top:0;">Jetpack default: ' . ($dont_email_default ? '“Publier uniquement”' : '“Publier et envoyer par e-mail”') . ' (option <code>wpcom_newsletter_send_default</code>=' . esc_html((string) (int) get_option('wpcom_newsletter_send_default', true)) . ').</p>';
+        echo '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:12px 0 18px;">';
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="return window.confirm(\'Basculer TOUS les posts planifiés en Publier uniquement (Jetpack) ?\\n\\nCela désactive l\\\'envoi Jetpack sur chaque futur article.\');" style="margin:0;">';
+        echo '<input type="hidden" name="action" value="wppk_jetpack_set_post_only_all_future">';
+        wp_nonce_field('wppk_jetpack_set_post_only_all_future');
+        submit_button('Tout basculer (posts planifiés)', 'secondary', 'submit', false);
+        echo '</form>';
+        echo '<span class="description">Applique <code>' . esc_html(self::JETPACK_DONT_EMAIL_META) . '</code>=<code>1</code> sur tous les posts <code>future</code>.</span>';
+        echo '</div>';
+
+        echo '<form method="get" action="' . esc_url(admin_url('admin.php')) . '" class="wppk-subscriber-form" style="margin-bottom:16px;">';
+        echo '<input type="hidden" name="page" value="wppk-newsletter">';
+        echo '<input type="hidden" name="tab" value="jetpack">';
+        echo '<div class="wppk-subscriber-form__grid">';
+        echo '<div class="wppk-subscriber-field wppk-subscriber-field--wide"><label for="wppk_jp_search">Recherche titre</label><input id="wppk_jp_search" type="search" name="jp_s" value="' . esc_attr($search) . '" placeholder="Rechercher un post"></div>';
+        echo '<div class="wppk-subscriber-field"><label for="wppk_jp_per_page">Afficher</label><select id="wppk_jp_per_page" name="jp_per_page">';
+        foreach ([25, 50, 100, 200] as $option) {
+            echo '<option value="' . esc_attr((string) $option) . '" ' . selected($per_page, $option, false) . '>' . esc_html((string) $option) . ' / page</option>';
+        }
+        echo '</select></div>';
+        echo '</div>';
+        submit_button(__('Rechercher', 'wppknewsletter'), 'secondary', '', false);
+        echo '</form>';
+
+        if (!$posts) {
+            echo '<p>Aucun post planifié trouvé en mode “Publier et envoyer par e-mail”.</p>';
+            return;
+        }
+
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+        echo '<input type="hidden" name="action" value="wppk_jetpack_bulk_post_only">';
+        wp_nonce_field('wppk_jetpack_bulk_post_only');
+        echo '<div class="wppk-bulkbar">';
+        submit_button('Basculer en “Publier uniquement”', 'secondary', 'submit', false);
+        echo '<div class="wppk-bulkbar__count">' . esc_html(sprintf('%d post(s) planifié(s) vont envoyer un email via Jetpack', $total)) . '</div>';
+        echo '</div>';
+
+        echo '<div class="wppk-table-shell"><table class="widefat striped wppk-table"><thead><tr>';
+        echo '<th style="width:36px;"><input type="checkbox" onclick="jQuery(\'.wppk-jp-check\').prop(\'checked\', this.checked)"></th>';
+        echo '<th>Titre</th><th>Date</th><th>Auteur</th><th>Meta Jetpack</th><th>Lien</th>';
+        echo '</tr></thead><tbody>';
+
+        foreach ($posts as $post) {
+            $post_id = (int) $post->ID;
+            $date = wp_date('Y-m-d H:i', get_post_timestamp($post, 'date'));
+            $author = get_the_author_meta('display_name', (int) $post->post_author);
+            $has_meta = metadata_exists('post', $post_id, self::JETPACK_DONT_EMAIL_META);
+            $meta_value = get_post_meta($post_id, self::JETPACK_DONT_EMAIL_META, true);
+            $dont_email = $has_meta ? (bool) $meta_value : $dont_email_default;
+            $meta_label = $dont_email ? 'email: OFF' : 'email: ON';
+            $edit_link = get_edit_post_link($post_id, 'raw');
+
+            echo '<tr>';
+            echo '<td><input type="checkbox" class="wppk-jp-check" name="post_ids[]" value="' . esc_attr((string) $post_id) . '"></td>';
+            echo '<td><strong>' . esc_html(get_the_title($post)) . '</strong></td>';
+            echo '<td>' . esc_html($date) . '</td>';
+            echo '<td>' . esc_html($author ?: '—') . '</td>';
+            echo '<td><code>' . esc_html(self::JETPACK_DONT_EMAIL_META) . '</code> = <code>' . esc_html($has_meta ? (string) $meta_value : '∅') . '</code> (' . esc_html($meta_label) . ')</td>';
+            echo '<td>' . ($edit_link ? '<a href="' . esc_url($edit_link) . '">Éditer</a>' : '—') . '</td>';
+            echo '</tr>';
+        }
+
+        echo '</tbody></table></div>';
+        echo '</form>';
+
+        echo $this->render_jetpack_posts_pagination($page_num, $per_page, $total, $search);
+    }
+
+    private function get_future_posts_that_will_email_to_subscribers(int $page_num, int $per_page, string $search = ''): array
+    {
+        $dont_email_default = !(bool) get_option('wpcom_newsletter_send_default', true);
+
+        $meta_query = [];
+        if ($dont_email_default) {
+            // Default is "post-only": a post will email subscribers only if the meta explicitly enables emailing.
+            $meta_query = [
+                'relation' => 'OR',
+                [
+                    'key' => self::JETPACK_DONT_EMAIL_META,
+                    'value' => '0',
+                    'compare' => '=',
+                ],
+                [
+                    'key' => self::JETPACK_DONT_EMAIL_META,
+                    'value' => '',
+                    'compare' => '=',
+                ],
+            ];
+        } else {
+            // Default is "post-and-email": a post will email subscribers unless meta disables it.
+            $meta_query = [
+                'relation' => 'OR',
+                [
+                    'key' => self::JETPACK_DONT_EMAIL_META,
+                    'compare' => 'NOT EXISTS',
+                ],
+                [
+                    'key' => self::JETPACK_DONT_EMAIL_META,
+                    'value' => '0',
+                    'compare' => '=',
+                ],
+                [
+                    'key' => self::JETPACK_DONT_EMAIL_META,
+                    'value' => '',
+                    'compare' => '=',
+                ],
+            ];
+        }
+
+        $args = [
+            'post_type' => 'post',
+            'post_status' => 'future',
+            'orderby' => 'date',
+            'order' => 'ASC',
+            'posts_per_page' => $per_page,
+            'paged' => $page_num,
+            's' => $search,
+            'meta_query' => $meta_query,
+        ];
+
+        $query = new WP_Query($args);
+        $posts = $query->posts;
+        $total = (int) $query->found_posts;
+
+        return [
+            'posts' => is_array($posts) ? $posts : [],
+            'total' => $total,
+        ];
+    }
+
+    private function render_jetpack_posts_pagination(int $page_num, int $per_page, int $total, string $search = ''): string
+    {
+        $total_pages = max(1, (int) ceil($total / max(1, $per_page)));
+        if ($total_pages <= 1) {
+            return '';
+        }
+
+        $base_args = [
+            'page' => 'wppk-newsletter',
+            'tab' => 'jetpack',
+            'jp_per_page' => $per_page,
+        ];
+        if ($search !== '') {
+            $base_args['jp_s'] = $search;
+        }
+
+        $html = '<div class="tablenav"><div class="tablenav-pages">';
+        $html .= '<span class="displaying-num">' . esc_html(sprintf('%d élément(s)', $total)) . '</span>';
+        $html .= '<span class="pagination-links">';
+
+        $prev = max(1, $page_num - 1);
+        $next = min($total_pages, $page_num + 1);
+
+        $html .= '<a class="prev-page button' . ($page_num <= 1 ? ' disabled' : '') . '" href="' . esc_url(add_query_arg(array_merge($base_args, ['jp_page' => $prev]), admin_url('admin.php'))) . '">&lsaquo;</a>';
+        $html .= '<span class="paging-input"><span class="tablenav-paging-text">' . esc_html(sprintf('%d sur %d', $page_num, $total_pages)) . '</span></span>';
+        $html .= '<a class="next-page button' . ($page_num >= $total_pages ? ' disabled' : '') . '" href="' . esc_url(add_query_arg(array_merge($base_args, ['jp_page' => $next]), admin_url('admin.php'))) . '">&rsaquo;</a>';
+
+        $html .= '</span></div></div>';
+        return $html;
+    }
+
+    public function handle_jetpack_bulk_post_only(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die('Not allowed.');
+        }
+        check_admin_referer('wppk_jetpack_bulk_post_only');
+
+        $post_ids = $_POST['post_ids'] ?? [];
+        if (!is_array($post_ids) || !$post_ids) {
+            wp_safe_redirect(admin_url('admin.php?page=wppk-newsletter&tab=jetpack'));
+            exit;
+        }
+
+        $updated = 0;
+        foreach ($post_ids as $raw_id) {
+            $post_id = absint($raw_id);
+            if ($post_id <= 0) {
+                continue;
+            }
+            if (!current_user_can('edit_post', $post_id)) {
+                continue;
+            }
+            update_post_meta($post_id, self::JETPACK_DONT_EMAIL_META, 1);
+            $updated++;
+        }
+
+        $redirect = add_query_arg(
+            [
+                'page' => 'wppk-newsletter',
+                'tab' => 'jetpack',
+                'wppk_jetpack_post_only' => $updated,
+            ],
+            admin_url('admin.php')
+        );
+        wp_safe_redirect($redirect);
+        exit;
+    }
+
+    public function handle_jetpack_set_post_only_all_future(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die('Not allowed.');
+        }
+        check_admin_referer('wppk_jetpack_set_post_only_all_future');
+
+        // Safety: keep the request bounded to reduce timeout risk on very large sites.
+        $start = microtime(true);
+        $updated = 0;
+        $offset = 0;
+        $limit = 200;
+
+        while (true) {
+            $ids = get_posts([
+                'post_type' => 'post',
+                'post_status' => 'future',
+                'fields' => 'ids',
+                'numberposts' => $limit,
+                'offset' => $offset,
+                'orderby' => 'ID',
+                'order' => 'ASC',
+                'no_found_rows' => true,
+            ]);
+
+            if (!is_array($ids) || !$ids) {
+                break;
+            }
+
+            foreach ($ids as $post_id) {
+                $post_id = absint($post_id);
+                if ($post_id <= 0) {
+                    continue;
+                }
+                if (!current_user_can('edit_post', $post_id)) {
+                    continue;
+                }
+                update_post_meta($post_id, self::JETPACK_DONT_EMAIL_META, 1);
+                $updated++;
+            }
+
+            $offset += $limit;
+
+            // Hard stop to avoid hitting max execution time.
+            if ((microtime(true) - $start) > 15) {
+                break;
+            }
+        }
+
+        $redirect = add_query_arg(
+            [
+                'page' => 'wppk-newsletter',
+                'tab' => 'jetpack',
+                'wppk_jetpack_post_only_all' => $updated,
+            ],
+            admin_url('admin.php')
+        );
+        wp_safe_redirect($redirect);
+        exit;
     }
 
     private function render_subscribers_table(): void
@@ -2383,21 +2682,71 @@ final class WPPK_Newsletter
             return;
         }
 
+        $search = sanitize_text_field(wp_unslash($_GET['trash_s'] ?? ''));
+        $page_num = max(1, absint($_GET['trash_page_num'] ?? 1));
+        $per_page_options = [25, 50, 100];
+        $per_page = absint($_GET['trash_per_page'] ?? 25);
+        if (!in_array($per_page, $per_page_options, true)) {
+            $per_page = 25;
+        }
+
         global $wpdb;
         $trash_table = $this->get_subscribers_trash_table_name($this->get_active_audience());
-        $rows = $wpdb->get_results("SELECT id, email, deleted_at, deleted_by FROM {$trash_table} ORDER BY id DESC LIMIT 10", ARRAY_A) ?: [];
-        if (!$rows) {
-            return;
+
+        $where = '';
+        $params = [];
+        if ($search !== '') {
+            $where = 'WHERE email LIKE %s';
+            $params[] = '%' . $wpdb->esc_like($search) . '%';
         }
+
+        $count_sql = "SELECT COUNT(*) FROM {$trash_table} {$where}";
+        $total = (int) ($params ? $wpdb->get_var($wpdb->prepare($count_sql, ...$params)) : $wpdb->get_var($count_sql));
+
+        $offset = max(0, ($page_num - 1) * $per_page);
+        $sql = "SELECT id, email, deleted_at, deleted_by FROM {$trash_table} {$where} ORDER BY id DESC LIMIT %d OFFSET %d";
+        $query_params = array_merge($params, [$per_page, $offset]);
+        $rows = $wpdb->get_results($wpdb->prepare($sql, ...$query_params), ARRAY_A) ?: [];
+
+        $base_args = [
+            'page' => 'wppk-newsletter',
+            'tab' => 'subscribers',
+            'trash_s' => $search,
+            'trash_per_page' => $per_page,
+        ];
+        $search_url = add_query_arg($base_args, admin_url('admin.php'));
         ?>
         <section class="wppk-panel" style="margin-bottom:18px;border:1px solid #f0c7c7;background:#fff7f7;">
             <div class="wppk-panel__header">
                 <div>
                     <h2 class="wppk-panel__title" style="margin:0;">Corbeille (restauration)</h2>
-                    <p class="wppk-panel__copy" style="margin:6px 0 0 0;">Derniers abonnés supprimés sur <strong><?php echo esc_html(strtoupper($this->get_active_audience())); ?></strong>. Tu peux restaurer en un clic.</p>
+                    <p class="wppk-panel__copy" style="margin:6px 0 0 0;">Abonnés supprimés sur <strong><?php echo esc_html(strtoupper($this->get_active_audience())); ?></strong>. Tu peux restaurer en un clic.</p>
                 </div>
             </div>
             <div style="padding:0 18px 18px 18px;">
+                <form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>" style="display:flex;gap:10px;align-items:flex-end;margin:0 0 12px 0;">
+                    <input type="hidden" name="page" value="wppk-newsletter">
+                    <input type="hidden" name="tab" value="subscribers">
+                    <div style="flex:1;min-width:200px;">
+                        <label for="wppk_trash_search" style="display:block;font-weight:600;margin-bottom:6px;">Recherche corbeille</label>
+                        <input id="wppk_trash_search" type="search" name="trash_s" value="<?php echo esc_attr($search); ?>" placeholder="email@exemple.com" style="width:100%;">
+                    </div>
+                    <div>
+                        <label for="wppk_trash_per_page" style="display:block;font-weight:600;margin-bottom:6px;">Afficher</label>
+                        <select id="wppk_trash_per_page" name="trash_per_page">
+                            <?php foreach ($per_page_options as $option) : ?>
+                                <option value="<?php echo esc_attr((string) $option); ?>" <?php selected($per_page, $option); ?>><?php echo esc_html((string) $option); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div>
+                        <?php submit_button(__('Filtrer', 'wppknewsletter'), 'secondary', '', false); ?>
+                    </div>
+                </form>
+
+                <?php if ($total <= 0) : ?>
+                    <p style="margin:0;color:#5d2a2a;">Corbeille vide.</p>
+                <?php else : ?>
                 <table class="widefat striped">
                     <thead><tr><th>Email</th><th>Supprimé le</th><th>Par</th><th>Action</th></tr></thead>
                     <tbody>
@@ -2419,9 +2768,54 @@ final class WPPK_Newsletter
                     <?php endforeach; ?>
                     </tbody>
                 </table>
+                <?php echo $this->render_trash_pagination($page_num, $per_page, $total, $search); ?>
+                <?php endif; ?>
             </div>
         </section>
         <?php
+    }
+
+    private function render_trash_pagination(int $page_num, int $per_page, int $total, string $search): string
+    {
+        $total_pages = max(1, (int) ceil($total / $per_page));
+        if ($total_pages <= 1) {
+            return '';
+        }
+
+        $base_args = [
+            'page' => 'wppk-newsletter',
+            'tab' => 'subscribers',
+            'trash_s' => $search,
+            'trash_per_page' => $per_page,
+        ];
+
+        $prev_url = add_query_arg(array_merge($base_args, ['trash_page_num' => max(1, $page_num - 1)]), admin_url('admin.php'));
+        $next_url = add_query_arg(array_merge($base_args, ['trash_page_num' => min($total_pages, $page_num + 1)]), admin_url('admin.php'));
+
+        $links = '';
+        $start = max(1, $page_num - 2);
+        $end = min($total_pages, $page_num + 2);
+        if ($start > 1) {
+            $first_url = add_query_arg(array_merge($base_args, ['trash_page_num' => 1]), admin_url('admin.php'));
+            $links .= '<a class="wppk-pagination__item" href="' . esc_url($first_url) . '">1</a>';
+            if ($start > 2) {
+                $links .= '<span class="wppk-pagination__ellipsis">…</span>';
+            }
+        }
+        for ($i = $start; $i <= $end; $i++) {
+            $url = add_query_arg(array_merge($base_args, ['trash_page_num' => $i]), admin_url('admin.php'));
+            $class = 'wppk-pagination__item' . ($i === $page_num ? ' is-active' : '');
+            $links .= '<a class="' . esc_attr($class) . '" href="' . esc_url($url) . '">' . esc_html((string) $i) . '</a>';
+        }
+        if ($end < $total_pages) {
+            if ($end < $total_pages - 1) {
+                $links .= '<span class="wppk-pagination__ellipsis">…</span>';
+            }
+            $last_url = add_query_arg(array_merge($base_args, ['trash_page_num' => $total_pages]), admin_url('admin.php'));
+            $links .= '<a class="wppk-pagination__item" href="' . esc_url($last_url) . '">' . esc_html((string) $total_pages) . '</a>';
+        }
+
+        return '<div class="wppk-pagination" style="margin-top:12px;"><a class="button button-secondary" href="' . esc_url($prev_url) . '">Précédent</a><div class="wppk-pagination__pages">' . $links . '</div><span class="wppk-pagination__summary">Page ' . esc_html((string) $page_num) . ' / ' . esc_html((string) $total_pages) . '</span><a class="button button-secondary" href="' . esc_url($next_url) . '">Suivant</a></div>';
     }
 
     private function render_dashboard_panel(array $settings, array $stats, array $posts, string $preview, string $preview_layout): void
@@ -4508,6 +4902,29 @@ final class WPPK_Newsletter
             posts_count INT UNSIGNED NOT NULL DEFAULT 0,
             PRIMARY KEY (id)
         ) {$charset};");
+    }
+
+    private function ensure_trash_tables(): void
+    {
+        global $wpdb;
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+        $charset = $wpdb->get_charset_collate();
+        foreach (['prod', 'dev'] as $audience) {
+            $trash = $this->get_subscribers_trash_table_name($audience);
+            dbDelta("CREATE TABLE {$trash} (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                subscriber_id BIGINT UNSIGNED NOT NULL,
+                email VARCHAR(190) NOT NULL,
+                payload LONGTEXT NOT NULL,
+                deleted_at DATETIME NOT NULL,
+                deleted_by VARCHAR(60) NOT NULL DEFAULT '',
+                PRIMARY KEY (id),
+                KEY subscriber_id (subscriber_id),
+                KEY email (email),
+                KEY deleted_at (deleted_at)
+            ) {$charset};");
+        }
     }
 
     private function migrate_subscribers_schema(): void
