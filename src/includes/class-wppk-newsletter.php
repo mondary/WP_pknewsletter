@@ -68,14 +68,24 @@ final class WPPK_Newsletter
             'wppk-newsletter-form',
             WPPKNEWSLETTER_URL . 'assets/form.css',
             [],
-            WPPKNEWSLETTER_VERSION
+            self::asset_version('assets/form.css')
         );
         wp_register_style(
             'wppk-newsletter-admin',
             WPPKNEWSLETTER_URL . 'assets/admin.css',
             [],
-            WPPKNEWSLETTER_VERSION
+            self::asset_version('assets/admin.css')
         );
+    }
+
+    private static function asset_version(string $relative_path): string
+    {
+        $full_path = rtrim(WPPKNEWSLETTER_PATH, '/') . '/' . ltrim($relative_path, '/');
+        $mtime = @filemtime($full_path);
+        if (is_int($mtime) && $mtime > 0) {
+            return (string) $mtime;
+        }
+        return WPPKNEWSLETTER_VERSION;
     }
 
     public function enqueue_admin_assets(string $hook): void
@@ -2573,9 +2583,8 @@ final class WPPK_Newsletter
             </div>
             <?php delete_transient(self::IMPORT_REPORT_TRANSIENT); ?>
 	        <?php endif; ?>
-	        <?php echo $this->render_subscriber_views_nav($view); ?>
-
 	        <?php if ($view === 'trash') : ?>
+	            <?php echo $this->render_subscriber_views_nav($view); ?>
 	            <?php $this->render_subscriber_trash_panel(); ?>
 	            <?php return; ?>
 	        <?php endif; ?>
@@ -2706,10 +2715,15 @@ final class WPPK_Newsletter
 	        echo '<input type="hidden" name="subscriber_view" value="' . esc_attr($view) . '">';
 	        wp_nonce_field('wppk_bulk_subscriber_action');
         echo '<div class="wppk-bulkbar">';
-	        echo '<select name="bulk_action_name"><option value="">Action groupée</option><option value="activate">Réactiver</option><option value="deactivate">Désactiver</option><option value="trash">Supprimer (corbeille)</option></select>';
-	        submit_button(__('Appliquer', 'wppknewsletter'), 'secondary', '', false);
-	        echo '<div class="wppk-bulkbar__count">' . esc_html(sprintf('%d abonnés', $total)) . '</div>';
-	        echo '</div>';
+        echo '<div class="wppk-bulkbar__actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">';
+		        echo '<select name="bulk_action_name" style="min-width:220px;"><option value="">Action groupée</option><option value="activate">Réactiver</option><option value="deactivate">Désactiver</option><option value="trash">Supprimer (corbeille)</option></select>';
+        echo '<button type="submit" class="button button-secondary">' . esc_html(__('Appliquer', 'wppknewsletter')) . '</button>';
+        echo '</div>';
+        echo '<div class="wppk-bulkbar__right">';
+        echo $this->render_subscriber_views_nav($view, 'inline');
+		        echo '<div class="wppk-bulkbar__count">' . esc_html(sprintf('%d abonnés', $total)) . '</div>';
+        echo '</div>';
+		        echo '</div>';
         echo '<div class="wppk-table-shell"><table class="widefat striped wppk-table"><thead><tr><th><input type="checkbox" onclick="jQuery(\'.wppk-subscriber-check\').prop(\'checked\', this.checked)"></th><th>Email address</th><th>1st subscription</th><th>Unsubscribed</th><th>Resubscribed</th><th>Status</th><th>Source</th><th>Confirmation</th><th>Channels</th><th>Email delivery time</th><th>Actions</th></tr></thead><tbody>';
         foreach ($rows as $row) {
             $status_badge = $row['status'] === 'active'
@@ -3715,7 +3729,7 @@ final class WPPK_Newsletter
 	        return (string) ob_get_clean();
 	    }
 
-	    private function render_subscriber_views_nav(string $view): string
+	    private function render_subscriber_views_nav(string $view, string $context = 'bar'): string
 	    {
 	        global $wpdb;
 	        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
@@ -3735,13 +3749,18 @@ final class WPPK_Newsletter
 	            ['key' => 'trash', 'label' => 'Corbeille', 'count' => $trash_count],
 	        ];
 
-	        $html = '<div class="wppk-bulkbar" style="margin:0 0 16px 0;justify-content:flex-start;gap:10px;flex-wrap:wrap;">';
+	        $context = $context === 'inline' ? 'inline' : 'bar';
+	        $html = $context === 'inline'
+	            ? '<div class="wppk-subview-tabs is-inline">'
+	            : '<div class="wppk-subview-tabs is-bar">';
 	        foreach ($items as $item) {
 	            $url = add_query_arg(array_merge($base, ['subscriber_view' => $item['key']]), admin_url('admin.php'));
-	            $class = 'button ' . ($view === $item['key'] ? 'button-primary' : 'button-secondary');
+	            $class = 'wppk-subview-tab' . ($view === $item['key'] ? ' is-active' : '');
 	            $html .= '<a class="' . esc_attr($class) . '" href="' . esc_url($url) . '">' . esc_html($item['label'] . ' (' . $item['count'] . ')') . '</a>';
 	        }
-	        $html .= '<span class="description">Audience active: <strong>' . esc_html(strtoupper($this->get_active_audience())) . '</strong></span>';
+	        if ($context === 'bar') {
+	            $html .= '<span class="description wppk-subview-audience">Audience: <strong>' . esc_html(strtoupper($this->get_active_audience())) . '</strong></span>';
+	        }
 	        $html .= '</div>';
 
 	        return $html;
