@@ -4,7 +4,7 @@ Tags: newsletter, email, digest, subscribers
 Requires at least: 6.0
 Tested up to: 6.5
 Requires PHP: 7.4
-Stable tag: 2.20
+Stable tag: 2.25
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -34,5 +34,8 @@ Yes. New subscribers must confirm via email.
 
 == Changelog ==
 
-= 2.20 =
-* Landing page shows PROD subscriber count even when audience mode is DEV.
+= 2.25 =
+* Subscribers table: better alignment for row actions (Edit/Delete) and improved views tabs placement.
+
+= 2.24 =
+* Subscribers: Actifs/Inactifs/Corbeille views, soft delete (trash), and purge-from-trash flow.

@@ -3716,13 +3716,13 @@ final class WPPK_Newsletter
 	        ?>
 	        <div class="wppk-row-actions">
 	            <a href="<?php echo esc_url($edit_url); ?>" class="button button-secondary">Editer</a>
-	            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline;margin-left:8px;" onsubmit="return window.confirm('Déplacer cet abonné en corbeille ?');">
+	            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="wppk-row-actions__form" onsubmit="return window.confirm('Déplacer cet abonné en corbeille ?');">
 	                <input type="hidden" name="action" value="wppk_delete_subscriber">
 	                <input type="hidden" name="subscriber_id" value="<?php echo esc_attr((string) $subscriber_id); ?>">
 	                <input type="hidden" name="subscriber_view" value="<?php echo esc_attr($view); ?>">
 	                <input type="hidden" name="audience_mode" value="<?php echo esc_attr($this->get_active_audience()); ?>">
 	                <?php wp_nonce_field('wppk_delete_subscriber'); ?>
-	                <button type="submit" class="button button-link-delete" style="color:#b32d2e;">Supprimer</button>
+	                <button type="submit" class="button button-link-delete wppk-row-actions__delete">Supprimer</button>
 	            </form>
 	        </div>
 	        <?php

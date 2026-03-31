@@ -1441,6 +1441,21 @@ body.toplevel_page_wppk-newsletter #wpfooter {
   text-decoration: none;
 }
 
+.wppk-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.wppk-row-actions__form {
+  margin: 0;
+}
+
+.wppk-row-actions__delete {
+  color: #b32d2e;
+}
+
 .wppk-bulkbar {
   display: flex;
   align-items: center;
