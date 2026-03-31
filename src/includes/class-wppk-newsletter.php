@@ -9,6 +9,7 @@ final class WPPK_Newsletter
     private const OPTION_KEY = 'wppk_newsletter_settings';
     private const CRON_HOOK = 'wppk_newsletter_digest_event';
     private const SUBSCRIBERS_TABLE = 'wppk_newsletter_subscribers';
+    private const SUBSCRIBERS_TRASH_TABLE = 'wppk_newsletter_subscribers_trash';
     private const LOG_TABLE = 'wppk_newsletter_logs';
     private const IMPORT_REPORT_TRANSIENT = 'wppk_import_report';
     private const AWS_STATS_TRANSIENT = 'wppk_aws_ses_stats';
@@ -47,6 +48,8 @@ final class WPPK_Newsletter
         add_action('admin_post_wppk_subscriber_action', [$instance, 'handle_subscriber_action']);
         add_action('admin_post_wppk_bulk_subscriber_action', [$instance, 'handle_bulk_subscriber_action']);
         add_action('admin_post_wppk_update_subscriber', [$instance, 'handle_update_subscriber']);
+        add_action('admin_post_wppk_delete_subscriber', [$instance, 'handle_delete_subscriber']);
+        add_action('admin_post_wppk_restore_subscriber', [$instance, 'handle_restore_subscriber']);
         add_action('admin_post_wppk_clear_event_logs', [$instance, 'handle_clear_event_logs']);
         add_action('admin_post_wppk_toggle_digest_pause', [$instance, 'handle_toggle_digest_pause']);
         add_action('admin_post_wppk_switch_audience', [$instance, 'handle_switch_audience']);
@@ -1642,6 +1645,218 @@ final class WPPK_Newsletter
         exit;
     }
 
+    public function handle_delete_subscriber(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Accès refusé.', 'wppknewsletter'));
+        }
+
+        check_admin_referer('wppk_delete_subscriber');
+
+        $subscriber_id = absint($_POST['subscriber_id'] ?? 0);
+        $confirm_email = sanitize_email(wp_unslash($_POST['confirm_email'] ?? ''));
+        $confirm_phrase = strtoupper(trim(sanitize_text_field(wp_unslash($_POST['confirm_phrase'] ?? ''))));
+        $confirm_irreversible = !empty($_POST['confirm_irreversible']);
+        $expected_audience = $this->sanitize_audience_mode((string) ($_POST['audience_mode'] ?? ''));
+
+        $redirect_args = [
+            'page' => 'wppk-newsletter',
+            'tab' => 'subscribers',
+        ];
+
+        if (!$subscriber_id) {
+            $redirect_args['wppk_debug'] = 'Abonné invalide.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        // Safety: ensure the deletion is executed on the same audience (PROD/DEV) the user was viewing.
+        if ($expected_audience === '' || $expected_audience !== $this->get_active_audience()) {
+            $redirect_args['wppk_debug'] = 'Audience active différente. Recharge la page et recommence.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        global $wpdb;
+        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
+        $row = $wpdb->get_row(
+            $wpdb->prepare("SELECT * FROM {$table} WHERE id = %d LIMIT 1", $subscriber_id),
+            ARRAY_A
+        );
+
+        if (empty($row['id']) || empty($row['email'])) {
+            $redirect_args['wppk_debug'] = 'Abonné introuvable.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        if (!$confirm_irreversible || $confirm_phrase !== 'SUPPRIMER') {
+            $redirect_args['wppk_debug'] = 'Confirmation manquante. Coche la case et tape SUPPRIMER.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        if ($confirm_email === '' || strtolower($confirm_email) !== strtolower((string) $row['email'])) {
+            $redirect_args['wppk_debug'] = 'Email de confirmation incorrect.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        $trash_table = $this->get_subscribers_trash_table_name($this->get_active_audience());
+        $user = wp_get_current_user();
+        $payload_json = wp_json_encode($row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!is_string($payload_json) || $payload_json === '') {
+            $redirect_args['wppk_debug'] = 'Backup impossible (payload). Suppression annulée.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        $saved = (int) $wpdb->insert(
+            $trash_table,
+            [
+                'subscriber_id' => (int) $row['id'],
+                'email' => (string) $row['email'],
+                'payload' => $payload_json,
+                'deleted_at' => current_time('mysql', true),
+                'deleted_by' => (string) ($user->user_login ?? ''),
+            ],
+            ['%d', '%s', '%s', '%s', '%s']
+        );
+        if ($saved <= 0) {
+            $redirect_args['wppk_debug'] = 'Backup impossible. Suppression annulée.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        $deleted = (int) $wpdb->delete($table, ['id' => (int) $row['id']], ['%d']);
+        if ($deleted <= 0) {
+            $redirect_args['wppk_debug'] = 'Suppression échouée.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        $this->log_event(
+            'subscriber',
+            'warn',
+            sprintf(
+                'Suppression définitive (backup ok): id=%d email=%s audience=%s user=%s',
+                (int) $row['id'],
+                (string) $row['email'],
+                strtoupper($this->get_active_audience()),
+                (string) ($user->user_login ?? '')
+            )
+        );
+
+        $redirect_args['wppk_debug'] = 'Abonné supprimé (backup en corbeille enregistré).';
+        wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+        exit;
+    }
+
+    public function handle_restore_subscriber(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Accès refusé.', 'wppknewsletter'));
+        }
+
+        check_admin_referer('wppk_restore_subscriber');
+
+        $trash_id = absint($_POST['trash_id'] ?? 0);
+        $expected_audience = $this->sanitize_audience_mode((string) ($_POST['audience_mode'] ?? ''));
+
+        $redirect_args = [
+            'page' => 'wppk-newsletter',
+            'tab' => 'subscribers',
+        ];
+
+        if (!$trash_id) {
+            $redirect_args['wppk_debug'] = 'Entrée corbeille invalide.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        if ($expected_audience === '' || $expected_audience !== $this->get_active_audience()) {
+            $redirect_args['wppk_debug'] = 'Audience active différente. Recharge la page et recommence.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        global $wpdb;
+        $trash_table = $this->get_subscribers_trash_table_name($this->get_active_audience());
+        $entry = $wpdb->get_row(
+            $wpdb->prepare("SELECT id, email, payload FROM {$trash_table} WHERE id = %d LIMIT 1", $trash_id),
+            ARRAY_A
+        );
+        if (empty($entry['id']) || empty($entry['payload'])) {
+            $redirect_args['wppk_debug'] = 'Entrée corbeille introuvable.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        $payload = json_decode((string) $entry['payload'], true);
+        if (!is_array($payload) || empty($payload['email'])) {
+            $redirect_args['wppk_debug'] = 'Payload corbeille invalide.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        $subscribers_table = $this->table_name(self::SUBSCRIBERS_TABLE);
+        $existing = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$subscribers_table} WHERE email = %s", (string) $payload['email']));
+        if ($existing > 0) {
+            $redirect_args['wppk_debug'] = 'Un abonné avec cet email existe déjà. Restauration annulée.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        $columns = $wpdb->get_col("SHOW COLUMNS FROM {$subscribers_table}", 0);
+        if (!is_array($columns) || !$columns) {
+            $redirect_args['wppk_debug'] = 'Impossible de lire le schéma SQL.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        $insert = [];
+        $format = [];
+        foreach ($columns as $col) {
+            if ($col === 'id') {
+                continue;
+            }
+            if (!array_key_exists($col, $payload)) {
+                continue;
+            }
+            $insert[$col] = $payload[$col];
+            if ($payload[$col] === null) {
+                $format[] = '%s';
+                continue;
+            }
+            if (is_int($payload[$col])) {
+                $format[] = '%d';
+            } else {
+                $format[] = '%s';
+            }
+        }
+
+        if (empty($insert['email'])) {
+            $redirect_args['wppk_debug'] = 'Email manquant dans le payload.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        $ok = (int) $wpdb->insert($subscribers_table, $insert, $format);
+        if ($ok <= 0) {
+            $redirect_args['wppk_debug'] = 'Restauration échouée.';
+            wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+            exit;
+        }
+
+        $wpdb->delete($trash_table, ['id' => (int) $entry['id']], ['%d']);
+        $user = wp_get_current_user();
+        $this->log_event('subscriber', 'ok', sprintf('Restauration corbeille: email=%s audience=%s user=%s', (string) $payload['email'], strtoupper($this->get_active_audience()), (string) ($user->user_login ?? '')));
+
+        $redirect_args['wppk_debug'] = 'Abonné restauré depuis la corbeille.';
+        wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+        exit;
+    }
+
     public function maybe_send_scheduled_digest(): void
     {
         $source = current_filter() === self::CRON_HOOK ? 'cron' : 'request';
@@ -1979,6 +2194,7 @@ final class WPPK_Newsletter
             </div>
             <?php delete_transient(self::IMPORT_REPORT_TRANSIENT); ?>
         <?php endif; ?>
+        <?php $this->render_subscriber_trash_panel(); ?>
 
         <?php
         $growth = $this->get_subscriber_growth_data('day');
@@ -2159,6 +2375,53 @@ final class WPPK_Newsletter
                 $this->render_subscriber_edit_drawer($edit_row, $search, $status_filter, $channel_filter, $page_num, $per_page);
             }
         }
+    }
+
+    private function render_subscriber_trash_panel(): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        global $wpdb;
+        $trash_table = $this->get_subscribers_trash_table_name($this->get_active_audience());
+        $rows = $wpdb->get_results("SELECT id, email, deleted_at, deleted_by FROM {$trash_table} ORDER BY id DESC LIMIT 10", ARRAY_A) ?: [];
+        if (!$rows) {
+            return;
+        }
+        ?>
+        <section class="wppk-panel" style="margin-bottom:18px;border:1px solid #f0c7c7;background:#fff7f7;">
+            <div class="wppk-panel__header">
+                <div>
+                    <h2 class="wppk-panel__title" style="margin:0;">Corbeille (restauration)</h2>
+                    <p class="wppk-panel__copy" style="margin:6px 0 0 0;">Derniers abonnés supprimés sur <strong><?php echo esc_html(strtoupper($this->get_active_audience())); ?></strong>. Tu peux restaurer en un clic.</p>
+                </div>
+            </div>
+            <div style="padding:0 18px 18px 18px;">
+                <table class="widefat striped">
+                    <thead><tr><th>Email</th><th>Supprimé le</th><th>Par</th><th>Action</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($rows as $row) : ?>
+                        <tr>
+                            <td><?php echo esc_html((string) $row['email']); ?></td>
+                            <td><?php echo esc_html((string) $row['deleted_at']); ?></td>
+                            <td><?php echo esc_html((string) $row['deleted_by']); ?></td>
+                            <td>
+                                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return window.confirm('Restaurer cet abonné ?');">
+                                    <input type="hidden" name="action" value="wppk_restore_subscriber">
+                                    <input type="hidden" name="trash_id" value="<?php echo esc_attr((string) $row['id']); ?>">
+                                    <input type="hidden" name="audience_mode" value="<?php echo esc_attr($this->get_active_audience()); ?>">
+                                    <?php wp_nonce_field('wppk_restore_subscriber'); ?>
+                                    <button type="submit" class="button button-secondary">Restaurer</button>
+                                </form>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        <?php
     }
 
     private function render_dashboard_panel(array $settings, array $stats, array $posts, string $preview, string $preview_layout): void
@@ -2977,6 +3240,42 @@ final class WPPK_Newsletter
                 <?php if ($cancel_url !== '') : ?>
                     <a href="<?php echo esc_url($cancel_url); ?>" class="button button-secondary">Annuler</a>
                 <?php endif; ?>
+            </div>
+        </form>
+        <hr style="margin:18px 0;">
+        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="wppk-edit-form" style="border:1px solid #f0c7c7;background:#fff7f7;padding:14px;border-radius:12px;">
+            <input type="hidden" name="action" value="wppk_delete_subscriber">
+            <input type="hidden" name="subscriber_id" value="<?php echo esc_attr((string) $row['id']); ?>">
+            <input type="hidden" name="audience_mode" value="<?php echo esc_attr($this->get_active_audience()); ?>">
+            <?php wp_nonce_field('wppk_delete_subscriber'); ?>
+            <p style="margin:0 0 10px 0;">
+                <strong style="color:#8a0f0f;">Suppression définitive</strong><br>
+                Action irréversible. Audience active: <strong><?php echo esc_html(strtoupper($this->get_active_audience())); ?></strong>.
+            </p>
+            <p style="margin:0 0 10px 0;color:#5d2a2a;">
+                Pour confirmer, coche la case, tape <code>SUPPRIMER</code> et retape l’email de l’abonné.
+            </p>
+            <div class="wppk-edit-grid" style="margin-top:0;">
+                <div>
+                    <label>Email de l’abonné (à retaper)</label>
+                    <input type="email" name="confirm_email" placeholder="<?php echo esc_attr($row['email']); ?>" required>
+                </div>
+                <div>
+                    <label>Mot de confirmation</label>
+                    <input type="text" name="confirm_phrase" placeholder="SUPPRIMER" required>
+                </div>
+                <div class="wppk-edit-check" style="grid-column:1 / -1;">
+                    <label class="wppk-edit-toggle">
+                        <input type="checkbox" name="confirm_irreversible" value="1" required>
+                        <span class="wppk-edit-toggle__ui">
+                            <span class="wppk-edit-toggle__label">Je confirme la suppression définitive</span>
+                            <span class="wppk-edit-toggle__value">Irréversible</span>
+                        </span>
+                    </label>
+                </div>
+            </div>
+            <div class="wppk-edit-actions" style="justify-content:flex-start;">
+                <button type="submit" class="button button-link-delete" style="color:#b32d2e;">Supprimer définitivement</button>
             </div>
         </form>
         <?php
@@ -4164,6 +4463,7 @@ final class WPPK_Newsletter
         $logs = $this->table_name(self::LOG_TABLE);
         foreach (['prod', 'dev'] as $audience) {
             $subscribers = $this->get_subscribers_table_name($audience);
+            $trash = $this->get_subscribers_trash_table_name($audience);
             dbDelta("CREATE TABLE {$subscribers} (
                 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
                 email VARCHAR(190) NOT NULL,
@@ -4185,6 +4485,19 @@ final class WPPK_Newsletter
                 PRIMARY KEY (id),
                 UNIQUE KEY email (email),
                 KEY status (status)
+            ) {$charset};");
+
+            dbDelta("CREATE TABLE {$trash} (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                subscriber_id BIGINT UNSIGNED NOT NULL,
+                email VARCHAR(190) NOT NULL,
+                payload LONGTEXT NOT NULL,
+                deleted_at DATETIME NOT NULL,
+                deleted_by VARCHAR(60) NOT NULL DEFAULT '',
+                PRIMARY KEY (id),
+                KEY subscriber_id (subscriber_id),
+                KEY email (email),
+                KEY deleted_at (deleted_at)
             ) {$charset};");
         }
 
@@ -4798,6 +5111,14 @@ final class WPPK_Newsletter
         global $wpdb;
         $mode = $this->sanitize_audience_mode((string) ($audience ?? $this->get_active_audience()));
         $suffix = self::SUBSCRIBERS_TABLE . ($mode === 'dev' ? '_dev' : '');
+        return $wpdb->prefix . $suffix;
+    }
+
+    private function get_subscribers_trash_table_name(?string $audience = null): string
+    {
+        global $wpdb;
+        $mode = $this->sanitize_audience_mode((string) ($audience ?? $this->get_active_audience()));
+        $suffix = self::SUBSCRIBERS_TRASH_TABLE . ($mode === 'dev' ? '_dev' : '');
         return $wpdb->prefix . $suffix;
     }
 }

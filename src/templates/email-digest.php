@@ -25,7 +25,16 @@ $rest_posts = $featured ? array_slice($posts, 1) : [];
 $render_post_data = static function ($post): array {
     $title = get_the_title($post);
     $permalink = get_permalink($post);
-    $excerpt = wp_trim_words(wp_strip_all_tags(get_the_excerpt($post) ?: $post->post_content), 26);
+
+    // Prefer the WordPress excerpt (already editorially curated/limited). Only fall back
+    // to a short content preview when the excerpt is missing to avoid giant emails.
+    $raw_excerpt = get_the_excerpt($post);
+    if (is_string($raw_excerpt) && $raw_excerpt !== '') {
+        $excerpt = wp_strip_all_tags($raw_excerpt);
+    } else {
+        $excerpt = wp_trim_words(wp_strip_all_tags($post->post_content ?? ''), 55);
+    }
+
     $thumb = get_the_post_thumbnail_url($post, 'large');
     $cats = get_the_category($post->ID);
     $label = $cats ? $cats[0]->name : 'Article';
@@ -196,7 +205,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                                     <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
                                                                 </div>
                                                                 <div style="font-size:14px;line-height:1.7;color:#4b5563;">
-                                                                    <?php echo esc_html(wp_trim_words($item['excerpt'], 16)); ?>
+                                                                    <?php echo esc_html($item['excerpt']); ?>
                                                                 </div>
                                                             </td>
                                                         </tr>
@@ -269,13 +278,13 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                             <tr>
                                                                 <td valign="top" style="height:78px;padding:0 0 8px;">
                                                                     <div style="margin:0;font-size:20px;line-height:1.25;font-weight:800;color:#111827;">
-                                                                        <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html(wp_trim_words($item['title'], 11, '…')); ?></a>
+                                                                        <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
                                                                     </div>
                                                                 </td>
                                                             </tr>
                                                             <tr>
                                                                 <td valign="top" style="height:60px;font-size:14px;line-height:1.7;color:#4b5563;">
-                                                                    <?php echo esc_html(wp_trim_words($item['excerpt'], 12, '…')); ?>
+                                                                    <?php echo esc_html($item['excerpt']); ?>
                                                                 </td>
                                                             </tr>
                                                         </table>
@@ -316,10 +325,10 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                                                     <?php echo esc_html($item['label']); ?>
                                                                                 </div>
                                                                                 <div style="margin:0 0 8px 0;font-size:20px;line-height:1.25;font-weight:800;color:#111827;">
-                                                                                    <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html(wp_trim_words($item['title'], 11, '…')); ?></a>
+                                                                                    <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
                                                                                 </div>
                                                                                 <div style="font-size:14px;line-height:1.7;color:#4b5563;">
-                                                                                    <?php echo esc_html(wp_trim_words($item['excerpt'], 12, '…')); ?>
+                                                                                    <?php echo esc_html($item['excerpt']); ?>
                                                                                 </div>
                                                                             </td>
                                                                         </tr>
@@ -347,10 +356,10 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                                                     <?php echo esc_html($item['label']); ?>
                                                                                 </div>
                                                                                 <div style="margin:0 0 8px 0;font-size:20px;line-height:1.25;font-weight:800;color:#111827;">
-                                                                                    <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html(wp_trim_words($item['title'], 11, '…')); ?></a>
+                                                                                    <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
                                                                                 </div>
                                                                                 <div style="font-size:14px;line-height:1.7;color:#4b5563;">
-                                                                                    <?php echo esc_html(wp_trim_words($item['excerpt'], 12, '…')); ?>
+                                                                                    <?php echo esc_html($item['excerpt']); ?>
                                                                                 </div>
                                                                             </td>
                                                                         </tr>
@@ -435,7 +444,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
                                                     <div style="margin:0 0 6px 0;font-size:20px;line-height:1.3;font-weight:800;color:#111827;">
                                                         <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
                                                     </div>
-                                                    <div style="font-size:14px;line-height:1.7;color:#4b5563;"><?php echo esc_html(wp_trim_words($item['excerpt'], 18)); ?></div>
+                                                    <div style="font-size:14px;line-height:1.7;color:#4b5563;"><?php echo esc_html($item['excerpt']); ?></div>
                                                 </td></tr>
                                             </table>
                                         </td>
@@ -454,7 +463,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
 	                                                                <div style="margin:0 0 6px 0;font-size:17px;line-height:1.35;font-weight:800;color:#111827;">
 	                                                                    <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
 	                                                                </div>
-	                                                                <div style="font-size:13px;line-height:1.6;color:#6b7280;"><?php echo esc_html(wp_trim_words($item['excerpt'], 18)); ?></div>
+	                                                                <div style="font-size:13px;line-height:1.6;color:#6b7280;"><?php echo esc_html($item['excerpt']); ?></div>
 	                                                            </td>
 	                                                            <?php if ($item['thumb']) : ?>
 	                                                                <td class="wppk-stack" width="144" valign="top" style="background:#f3f4f6;">
@@ -493,7 +502,7 @@ $featured_data = $featured ? $render_post_data($featured) : null;
 	                                                    <div style="margin:0 0 10px 0;font-size:24px;line-height:1.2;font-weight:800;color:#111827;">
 	                                                        <a href="<?php echo esc_url($item['permalink']); ?>" style="color:#111827;text-decoration:none;"><?php echo esc_html($item['title']); ?></a>
 	                                                    </div>
-	                                                    <div style="margin:0 0 18px 0;font-size:14px;line-height:1.75;color:#4b5563;"><?php echo esc_html(wp_trim_words($item['excerpt'], 22)); ?></div>
+	                                                    <div style="margin:0 0 18px 0;font-size:14px;line-height:1.75;color:#4b5563;"><?php echo esc_html($item['excerpt']); ?></div>
                                                     <table role="presentation" cellspacing="0" cellpadding="0">
                                                         <tr>
                                                             <td style="border-radius:999px;background:#f8fafc;border:1px solid #e5e7eb;">
