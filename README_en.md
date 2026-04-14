@@ -16,6 +16,7 @@
 - Token-based unsubscribe links
 - Sending stats and subscriber growth charts
 - Dashboard `Posts du jour` preview showing both published and scheduled posts for the day, with a visual scheduled flag
+- Optional frontend floating action button (bottom-right), configurable from settings
 
 ## 🧠 Usage
 The plugin is meant to run an editorial digest newsletter from WordPress without relying on a third-party SaaS for the management UI.
@@ -40,6 +41,8 @@ In `WP PK Newsletter > Settings`, you can configure:
 - maximum number of posts
 - intro and footer text
 - SMTP host / port / security / credentials
+- newsletter floating button: show/hide, label, background color, and padding
+- newsletter floating button: configurable radius and custom destination URL
 
 ## 🧾 Commands
 The plugin does not expose a dedicated CLI command.
@@ -111,6 +114,11 @@ Amazon SES example:
 - security: `TLS`
 
 ## 🧾 Changelog
+- `2.35`: auto-recovers stuck “sending” campaigns + flushes progress periodically + per-recipient error handling (avoids being stuck at 0/…)
+- `2.34`: optional diagnostics panel `?wppk_diag=1` (PROD/DEV campaign payloads + latest send log) + logs an error if DB insert fails
+- `2.33`: manual digest send now marks the daily campaign as `sent` and writes logs like the cron sender (prevents the dashboard from staying stuck on “In progress”) + dashboard shows PROD/DEV
+- `2.32`: newsletter floating button now supports configurable radius and custom destination URL (default `https://mondary.design/newsletter/`)
+- `2.31`: added configurable newsletter floating button (bottom-right) in settings (on/off, label, color, padding)
 - `1.18`: larger email header logo, lighter thumbnail radius, SMTP password no longer prefilled in admin
 - `1.17`: email visual adjustments
 - `1.16`: subscriber chart switched to cumulative volume

@@ -16,6 +16,7 @@
 - Désinscription par lien tokenisé
 - Statistiques d’envoi et courbes d’évolution des abonnés
 - Dashboard `Posts du jour` affichant les contenus publiés et planifiés du jour, avec flag visuel sur les planifiés
+- Bouton flottant frontend (FAB) optionnel en bas à droite, configurable depuis les réglages
 
 ## 🧠 Utilisation
 Le plugin sert à piloter une newsletter “digest” depuis WordPress sans dépendre d’un SaaS pour l’interface de gestion.
@@ -40,6 +41,8 @@ Dans `WP PK Newsletter > Réglages`, tu peux configurer :
 - nombre maximum de posts
 - texte d’introduction et de footer
 - SMTP host / port / sécurité / identifiants
+- bouton flottant newsletter : affichage, libellé, couleur de fond et padding
+- bouton flottant newsletter : radius et URL de destination personnalisables
 
 ## 🧾 Commandes
 Le plugin n’expose pas de commande CLI dédiée.
@@ -111,6 +114,11 @@ Exemple Amazon SES :
 - sécurité : `TLS`
 
 ## 🧾 Changelog
+- `2.35` : récupération automatique des campagnes bloquées + flush de progression + capture d’erreurs par destinataire (évite les “sending” à 0/…)
+- `2.34` : panneau diagnostic optionnel `?wppk_diag=1` (payload campagnes PROD/DEV + dernier log d’envoi) + log d’erreur si l’insertion DB échoue
+- `2.33` : envoi manuel digest : la campagne du jour est désormais marquée `sent` et loggée (évite le statut bloqué “En cours” sur le dashboard) + le dashboard affiche PROD/DEV
+- `2.32` : bouton flottant newsletter: ajout du radius configurable et du lien de destination personnalisable (défaut `https://mondary.design/newsletter/`)
+- `2.31` : ajout d’un bouton flottant newsletter (bottom-right) configurable depuis les réglages (on/off, libellé, couleur, padding)
 - `1.18` : logo header agrandi, thumbnails email avec radius allégé, mot de passe SMTP non prérempli dans l’admin
 - `1.17` : ajustements email visuels
 - `1.16` : courbe abonnés en volume cumulé

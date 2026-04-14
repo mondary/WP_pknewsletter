@@ -37,6 +37,7 @@ final class WPPK_Newsletter
         add_action('admin_init', [$instance, 'register_settings']);
         add_action('admin_menu', [$instance, 'register_admin_page']);
         add_action('admin_enqueue_scripts', [$instance, 'enqueue_admin_assets']);
+        add_action('wp_footer', [$instance, 'render_floating_newsletter_button']);
         add_action('wp_dashboard_setup', [$instance, 'register_wp_dashboard_widget']);
         add_action('admin_footer-index.php', [$instance, 'render_wp_dashboard_widget_script']);
         add_action('admin_bar_menu', [$instance, 'register_admin_bar_node'], 90);
@@ -86,6 +87,39 @@ final class WPPK_Newsletter
             return (string) $mtime;
         }
         return WPPKNEWSLETTER_VERSION;
+    }
+
+    private function get_month_bounds_utc(): array
+    {
+        $tz = wp_timezone();
+        $now_local = new DateTimeImmutable('now', $tz);
+        $month_start_local = $now_local->modify('first day of this month')->setTime(0, 0, 0);
+        $next_month_start_local = $month_start_local->modify('first day of next month')->setTime(0, 0, 0);
+
+        $utc = new DateTimeZone('UTC');
+        return [
+            'start' => $month_start_local->setTimezone($utc)->format('Y-m-d H:i:s'),
+            'end' => $next_month_start_local->setTimezone($utc)->format('Y-m-d H:i:s'),
+            'now_local' => $now_local,
+            'month_start_local' => $month_start_local,
+        ];
+    }
+
+    private function get_emails_sent_mtd(): int
+    {
+        global $wpdb;
+        $log_table = $this->table_name(self::LOG_TABLE);
+        $bounds = $this->get_month_bounds_utc();
+
+        $sum = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COALESCE(SUM(emails_sent), 0) FROM {$log_table} WHERE sent_at >= %s AND sent_at < %s",
+                $bounds['start'],
+                $bounds['end']
+            )
+        );
+
+        return max(0, $sum);
     }
 
     public function enqueue_admin_assets(string $hook): void
@@ -343,6 +377,14 @@ final class WPPK_Newsletter
 
         $introText = wp_kses_post($input['intro_text'] ?? $defaults['intro_text']);
         $introText = $this->normalize_intro_text($introText);
+        $floatingButtonLabel = sanitize_text_field($input['floating_button_label'] ?? $defaults['floating_button_label']);
+        if ($floatingButtonLabel === '') {
+            $floatingButtonLabel = (string) $defaults['floating_button_label'];
+        }
+        $floatingButtonTargetUrl = esc_url_raw((string) ($input['floating_button_target_url'] ?? $defaults['floating_button_target_url']));
+        if ($floatingButtonTargetUrl === '') {
+            $floatingButtonTargetUrl = (string) $defaults['floating_button_target_url'];
+        }
 
         return [
             'brand_name' => $brandName,
@@ -371,7 +413,116 @@ final class WPPK_Newsletter
             'aws_ses_region' => sanitize_text_field($input['aws_ses_region'] ?? $defaults['aws_ses_region']),
             'aws_ses_access_key_id' => sanitize_text_field($input['aws_ses_access_key_id'] ?? $defaults['aws_ses_access_key_id']),
             'aws_ses_secret_access_key' => $awsSecretKey,
+            'floating_button_enabled' => !empty($input['floating_button_enabled']) ? 1 : 0,
+            'floating_button_label' => $floatingButtonLabel,
+            'floating_button_bg_color' => sanitize_hex_color($input['floating_button_bg_color'] ?? $defaults['floating_button_bg_color']) ?: $defaults['floating_button_bg_color'],
+            'floating_button_padding' => min(32, max(8, absint($input['floating_button_padding'] ?? $defaults['floating_button_padding']))),
+            'floating_button_radius' => min(999, max(0, absint($input['floating_button_radius'] ?? $defaults['floating_button_radius']))),
+            'floating_button_target_url' => $floatingButtonTargetUrl,
         ];
+    }
+
+    private function get_newsletter_landing_url(): string
+    {
+        $landing_id = absint(get_option(self::LANDING_PAGE_ID_OPTION, 0));
+        if ($landing_id > 0) {
+            $url = get_permalink($landing_id);
+            if (is_string($url) && $url !== '') {
+                return $url;
+            }
+        }
+
+        return home_url('/newsletter/');
+    }
+
+    private function get_contrasting_text_color(string $hex): string
+    {
+        $clean = ltrim($hex, '#');
+        if (strlen($clean) !== 6 || !ctype_xdigit($clean)) {
+            return '#ffffff';
+        }
+
+        $r = hexdec(substr($clean, 0, 2));
+        $g = hexdec(substr($clean, 2, 2));
+        $b = hexdec(substr($clean, 4, 2));
+        $brightness = (0.299 * $r) + (0.587 * $g) + (0.114 * $b);
+
+        return $brightness > 160 ? '#111111' : '#ffffff';
+    }
+
+    public function render_floating_newsletter_button(): void
+    {
+        if (is_admin() || is_feed() || is_preview()) {
+            return;
+        }
+
+        $settings = $this->get_settings();
+        if (empty($settings['floating_button_enabled'])) {
+            return;
+        }
+
+        $landing_id = absint(get_option(self::LANDING_PAGE_ID_OPTION, 0));
+        if ($landing_id > 0 && is_page($landing_id)) {
+            return;
+        }
+
+        $url = (string) ($settings['floating_button_target_url'] ?? '');
+        if ($url === '') {
+            $url = $this->get_newsletter_landing_url();
+        }
+        $label = trim((string) ($settings['floating_button_label'] ?? 'Newsletter'));
+        $bg = (string) ($settings['floating_button_bg_color'] ?? '#2f80ed');
+        $padding = min(32, max(8, (int) ($settings['floating_button_padding'] ?? 14)));
+        $radius = min(999, max(0, (int) ($settings['floating_button_radius'] ?? 999)));
+        $text_color = $this->get_contrasting_text_color($bg);
+
+        if ($label === '') {
+            $label = 'Newsletter';
+        }
+        ?>
+        <style>
+            .wppk-floating-newsletter-btn {
+                position: fixed;
+                right: 24px;
+                bottom: 24px;
+                z-index: 9999;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+                padding: <?php echo esc_attr((string) $padding); ?>px;
+                border-radius: <?php echo esc_attr((string) $radius); ?>px;
+                text-decoration: none;
+                font-weight: 700;
+                line-height: 1;
+                box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+                transition: transform .18s ease, box-shadow .18s ease, opacity .18s ease;
+                background: <?php echo esc_attr($bg); ?>;
+                color: <?php echo esc_attr($text_color); ?>;
+            }
+            .wppk-floating-newsletter-btn:hover,
+            .wppk-floating-newsletter-btn:focus {
+                transform: translateY(-1px);
+                box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
+                opacity: .97;
+                color: <?php echo esc_attr($text_color); ?>;
+                text-decoration: none;
+            }
+            .wppk-floating-newsletter-btn:focus-visible {
+                outline: 2px solid rgba(17, 17, 17, 0.75);
+                outline-offset: 2px;
+            }
+            @media (max-width: 640px) {
+                .wppk-floating-newsletter-btn {
+                    right: 14px;
+                    bottom: 14px;
+                }
+            }
+        </style>
+        <a class="wppk-floating-newsletter-btn" href="<?php echo esc_url($url); ?>" aria-label="<?php echo esc_attr($label); ?>">
+            <?php echo esc_html($label); ?>
+        </a>
+        <?php
     }
 
     private function sanitize_audience_mode(string $value): string
@@ -1023,6 +1174,7 @@ final class WPPK_Newsletter
         $campaign_option = $this->get_digest_sent_option_name($today, $audience);
         $settings = $this->get_settings();
         $campaign = $this->get_digest_campaign_payload($campaign_option);
+        $source = 'manual';
 
         if ($this->is_digest_campaign_sent($campaign)) {
             $result = [
@@ -1053,7 +1205,7 @@ final class WPPK_Newsletter
                         'reason' => sprintf('Une campagne est déjà en cours aujourd’hui sur %s (%d/%d).', strtoupper($audience), (int) ($campaign['processed_total'] ?? 0), (int) ($campaign['total'] ?? 0)),
                     ];
                 } else {
-                    $campaign = $this->start_digest_campaign($campaign_option, $today, $audience, 'manual', $settings);
+                    $campaign = $this->start_digest_campaign($campaign_option, $today, $audience, $source, $settings);
                     if (!$campaign) {
                         $result = [
                             'sent' => 0,
@@ -1067,12 +1219,24 @@ final class WPPK_Newsletter
                                 'reason' => (string) ($batch['reason'] ?? 'Envoi stoppé.'),
                             ];
                         } else {
-                        $result = [
-                            'sent' => (int) ($batch['sent_total'] ?? 0),
-                            'reason' => !empty($batch['done'])
-                                ? sprintf('Campagne terminée (%d/%d).', (int) ($batch['processed_total'] ?? 0), (int) ($batch['total'] ?? 0))
-                                : sprintf('Campagne en cours (%d/%d).', (int) ($batch['processed_total'] ?? 0), (int) ($batch['total'] ?? 0)),
-                        ];
+                            if (!empty($batch['done'])) {
+                                $this->mark_digest_campaign_sent($campaign_option, array_merge($this->get_digest_campaign_payload($campaign_option) ?: [], [
+                                    'status' => 'sent',
+                                    'finished_at' => current_time('mysql', true),
+                                ]));
+                                update_option('wppk_newsletter_last_sent_date', $today, false);
+                                $this->log_send((int) ($batch['sent_total'] ?? 0), (int) ($batch['posts_count'] ?? 0));
+                                $this->log_event($source, 'ok', sprintf('Envoi terminé : %d/%d (ok=%d)', (int) ($batch['processed_total'] ?? 0), (int) ($batch['total'] ?? 0), (int) ($batch['sent_total'] ?? 0)));
+                            } else {
+                                $this->log_event($source, 'ok', sprintf('Batch %s: %d/%d (ok=%d)', strtoupper($audience), (int) ($batch['processed_total'] ?? 0), (int) ($batch['total'] ?? 0), (int) ($batch['sent_total'] ?? 0)));
+                            }
+
+                            $result = [
+                                'sent' => (int) ($batch['sent_total'] ?? 0),
+                                'reason' => !empty($batch['done'])
+                                    ? sprintf('Campagne terminée (%d/%d).', (int) ($batch['processed_total'] ?? 0), (int) ($batch['total'] ?? 0))
+                                    : sprintf('Campagne en cours (%d/%d).', (int) ($batch['processed_total'] ?? 0), (int) ($batch['total'] ?? 0)),
+                            ];
                         }
                     }
                 }
@@ -1970,6 +2134,12 @@ final class WPPK_Newsletter
             return;
         }
 
+        if ($this->is_stale_digest_campaign($campaign)) {
+            $this->log_event('cron', 'warn', sprintf('Campagne bloquée détectée (%s). Réinitialisation pour reprise.', strtoupper($audience)));
+            delete_option($campaign_option);
+            $campaign = null;
+        }
+
         if (
             !$campaign
             && !$this->is_now_in_digest_start_window(
@@ -2002,6 +2172,7 @@ final class WPPK_Newsletter
                 }
             }
 
+            $this->log_event('cron', 'ok', sprintf('Envoi batch démarré (%s): %d/%d', strtoupper($audience), (int) ($campaign['processed_total'] ?? 0), (int) ($campaign['total'] ?? 0)));
             $result = $this->send_digest_campaign_batch($campaign_option, $campaign, $settings, false);
             if (!empty($result['aborted'])) {
                 $this->log_event('cron', 'warn', sprintf('Envoi stoppé : %s', (string) ($result['reason'] ?? 'raison inconnue')));
@@ -2048,27 +2219,24 @@ final class WPPK_Newsletter
         $stats = $this->get_stats();
         $posts = $this->get_daily_posts_overview();
         $tab = sanitize_key($_GET['tab'] ?? 'dashboard');
-        $tabs = [
-            'dashboard' => __('Dashboard', 'wppknewsletter'),
-            'subscribers' => __('Abonnés', 'wppknewsletter'),
-            'stats' => __('Statistiques', 'wppknewsletter'),
-            'settings' => __('Reglages', 'wppknewsletter'),
-            'jetpack' => __('Jetpack', 'wppknewsletter'),
-        ];
-        $tab_icons = [
-            'dashboard' => 'dashboard',
-            'subscribers' => 'groups',
-            'stats' => 'chart-bar',
-            'settings' => 'admin-generic',
-            'jetpack' => 'admin-plugins',
-        ];
-        $page_titles = [
-            'dashboard' => __('Dashboard', 'wppknewsletter'),
-            'settings' => __('Settings', 'wppknewsletter'),
-            'subscribers' => __('Abonnés', 'wppknewsletter'),
-            'stats' => __('Statistics', 'wppknewsletter'),
-            'jetpack' => __('Jetpack Newsletter', 'wppknewsletter'),
-        ];
+	        $tabs = [
+	            'dashboard' => __('Dashboard', 'wppknewsletter'),
+	            'subscribers' => __('Abonnés', 'wppknewsletter'),
+	            'stats' => __('Statistiques', 'wppknewsletter'),
+	            'settings' => __('Reglages', 'wppknewsletter'),
+	        ];
+	        $tab_icons = [
+	            'dashboard' => 'dashboard',
+	            'subscribers' => 'groups',
+	            'stats' => 'chart-bar',
+	            'settings' => 'admin-generic',
+	        ];
+	        $page_titles = [
+	            'dashboard' => __('Dashboard', 'wppknewsletter'),
+	            'settings' => __('Settings', 'wppknewsletter'),
+	            'subscribers' => __('Abonnés', 'wppknewsletter'),
+	            'stats' => __('Statistics', 'wppknewsletter'),
+	        ];
         if (!isset($tabs[$tab])) {
             $tab = 'dashboard';
         }
@@ -2161,6 +2329,32 @@ final class WPPK_Newsletter
                                                 <input name="<?php echo esc_attr(self::OPTION_KEY); ?>[logo_url]" id="logo_url" type="text" value="<?php echo esc_attr($settings['logo_url']); ?>">
                                             </div>
                                         </div>
+                                        <div class="wppk-field wppk-field--span-3">
+                                            <label class="wppk-field__checkbox">
+                                                <input type="checkbox" name="<?php echo esc_attr(self::OPTION_KEY); ?>[floating_button_enabled]" id="floating_button_enabled" value="1" <?php checked((int) ($settings['floating_button_enabled'] ?? 0), 1); ?>>
+                                                <span>Afficher un bouton flottant newsletter en bas à droite</span>
+                                            </label>
+                                        </div>
+                                        <div class="wppk-field">
+                                            <label for="floating_button_label">Libellé du bouton</label>
+                                            <input name="<?php echo esc_attr(self::OPTION_KEY); ?>[floating_button_label]" id="floating_button_label" type="text" value="<?php echo esc_attr((string) ($settings['floating_button_label'] ?? 'Newsletter')); ?>">
+                                        </div>
+                                        <div class="wppk-field">
+                                            <label for="floating_button_bg_color">Couleur du bouton</label>
+                                            <input type="text" name="<?php echo esc_attr(self::OPTION_KEY); ?>[floating_button_bg_color]" id="floating_button_bg_color" class="wppk-color-field" value="<?php echo esc_attr((string) ($settings['floating_button_bg_color'] ?? '#2f80ed')); ?>" data-default-color="#2f80ed">
+                                        </div>
+                                        <div class="wppk-field">
+                                            <label for="floating_button_padding">Padding du bouton (px)</label>
+                                            <input type="number" min="8" max="32" name="<?php echo esc_attr(self::OPTION_KEY); ?>[floating_button_padding]" id="floating_button_padding" value="<?php echo esc_attr((string) ((int) ($settings['floating_button_padding'] ?? 14))); ?>">
+                                        </div>
+                                        <div class="wppk-field">
+                                            <label for="floating_button_radius">Radius du bouton (px)</label>
+                                            <input type="number" min="0" max="999" name="<?php echo esc_attr(self::OPTION_KEY); ?>[floating_button_radius]" id="floating_button_radius" value="<?php echo esc_attr((string) ((int) ($settings['floating_button_radius'] ?? 999))); ?>">
+                                        </div>
+                                        <div class="wppk-field wppk-field--span-3">
+                                            <label for="floating_button_target_url">Lien de destination du bouton</label>
+                                            <input name="<?php echo esc_attr(self::OPTION_KEY); ?>[floating_button_target_url]" id="floating_button_target_url" type="url" value="<?php echo esc_attr((string) ($settings['floating_button_target_url'] ?? 'https://mondary.design/newsletter/')); ?>" placeholder="https://mondary.design/newsletter/">
+                                        </div>
                                     </div>
                                     <div class="wppk-settings-section__footer">
                                         <?php submit_button(__('Enregistrer', 'wppknewsletter'), 'primary', 'submit', false); ?>
@@ -2215,12 +2409,35 @@ final class WPPK_Newsletter
                                 </section>
                             </div>
                         </form>
-                    </section>
+	                    </section>
 
-                    <section class="wppk-panel">
-                        <div class="wppk-panel__header">
-                            <div>
-                                <h2 class="wppk-panel__title">Logs internes</h2>
+	                    <section class="wppk-panel">
+	                        <div class="wppk-panel__header">
+	                            <div>
+	                                <h2 class="wppk-panel__title">Jetpack Newsletter</h2>
+	                                <p class="wppk-panel__copy">Si Jetpack est actif, ces outils te permettent de forcer tous les posts planifiés en “Publier uniquement” (ne pas envoyer par email).</p>
+	                            </div>
+	                        </div>
+	                        <div style="padding:0 18px 18px 18px;">
+	                            <?php
+	                            $jp_count = $this->get_future_posts_that_will_email_to_subscribers(1, 1, '')['total'] ?? 0;
+	                            ?>
+	                            <p style="margin:0 0 12px 0;">
+	                                <strong><?php echo esc_html((string) $jp_count); ?></strong> post(s) planifié(s) vont envoyer un email via Jetpack.
+	                            </p>
+	                            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return window.confirm('Basculer TOUS les posts planifiés en Publier uniquement (Jetpack) ?');" style="margin:0;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+	                                <input type="hidden" name="action" value="wppk_jetpack_set_post_only_all_future">
+	                                <?php wp_nonce_field('wppk_jetpack_set_post_only_all_future'); ?>
+	                                <button type="submit" class="button button-secondary">Tout basculer (posts planifiés)</button>
+	                                <span class="description">Applique <code><?php echo esc_html(self::JETPACK_DONT_EMAIL_META); ?></code>=<code>1</code> sur les posts <code>future</code>.</span>
+	                            </form>
+	                        </div>
+	                    </section>
+
+	                    <section class="wppk-panel">
+	                        <div class="wppk-panel__header">
+	                            <div>
+	                                <h2 class="wppk-panel__title">Logs internes</h2>
                                 <p class="wppk-panel__copy">Nouveaux abonnés, désinscriptions et décisions du scheduler minute par minute.</p>
                             </div>
                             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
@@ -2251,17 +2468,7 @@ final class WPPK_Newsletter
                         </div>
                         <?php $this->render_logs_table(); ?>
                     </section>
-                <?php elseif ($tab === 'jetpack') : ?>
-                    <section class="wppk-panel">
-                        <div class="wppk-panel__header">
-                            <div>
-                                <h2 class="wppk-panel__title"><?php esc_html_e('Jetpack Newsletter', 'wppknewsletter'); ?></h2>
-                                <p class="wppk-panel__copy">Liste les posts planifiés qui sont encore en mode Jetpack “Publier et envoyer par e-mail”, puis bascule-les en “Publier uniquement”.</p>
-                            </div>
-                        </div>
-                        <?php $this->render_jetpack_newsletter_posts_panel(); ?>
-                    </section>
-                <?php endif; ?>
+	                <?php endif; ?>
             </div>
         </div>
         <?php
@@ -2294,7 +2501,7 @@ final class WPPK_Newsletter
 
         echo '<form method="get" action="' . esc_url(admin_url('admin.php')) . '" class="wppk-subscriber-form" style="margin-bottom:16px;">';
         echo '<input type="hidden" name="page" value="wppk-newsletter">';
-        echo '<input type="hidden" name="tab" value="jetpack">';
+        echo '<input type="hidden" name="tab" value="settings">';
         echo '<div class="wppk-subscriber-form__grid">';
         echo '<div class="wppk-subscriber-field wppk-subscriber-field--wide"><label for="wppk_jp_search">Recherche titre</label><input id="wppk_jp_search" type="search" name="jp_s" value="' . esc_attr($search) . '" placeholder="Rechercher un post"></div>';
         echo '<div class="wppk-subscriber-field"><label for="wppk_jp_per_page">Afficher</label><select id="wppk_jp_per_page" name="jp_per_page">';
@@ -2419,11 +2626,11 @@ final class WPPK_Newsletter
             return '';
         }
 
-        $base_args = [
-            'page' => 'wppk-newsletter',
-            'tab' => 'jetpack',
-            'jp_per_page' => $per_page,
-        ];
+	        $base_args = [
+	            'page' => 'wppk-newsletter',
+	            'tab' => 'settings',
+	            'jp_per_page' => $per_page,
+	        ];
         if ($search !== '') {
             $base_args['jp_s'] = $search;
         }
@@ -2450,11 +2657,11 @@ final class WPPK_Newsletter
         }
         check_admin_referer('wppk_jetpack_bulk_post_only');
 
-        $post_ids = $_POST['post_ids'] ?? [];
-        if (!is_array($post_ids) || !$post_ids) {
-            wp_safe_redirect(admin_url('admin.php?page=wppk-newsletter&tab=jetpack'));
-            exit;
-        }
+	        $post_ids = $_POST['post_ids'] ?? [];
+	        if (!is_array($post_ids) || !$post_ids) {
+	            wp_safe_redirect(admin_url('admin.php?page=wppk-newsletter&tab=settings'));
+	            exit;
+	        }
 
         $updated = 0;
         foreach ($post_ids as $raw_id) {
@@ -2469,14 +2676,14 @@ final class WPPK_Newsletter
             $updated++;
         }
 
-        $redirect = add_query_arg(
-            [
-                'page' => 'wppk-newsletter',
-                'tab' => 'jetpack',
-                'wppk_jetpack_post_only' => $updated,
-            ],
-            admin_url('admin.php')
-        );
+	        $redirect = add_query_arg(
+	            [
+	                'page' => 'wppk-newsletter',
+	                'tab' => 'settings',
+	                'wppk_jetpack_post_only' => $updated,
+	            ],
+	            admin_url('admin.php')
+	        );
         wp_safe_redirect($redirect);
         exit;
     }
@@ -2530,14 +2737,14 @@ final class WPPK_Newsletter
             }
         }
 
-        $redirect = add_query_arg(
-            [
-                'page' => 'wppk-newsletter',
-                'tab' => 'jetpack',
-                'wppk_jetpack_post_only_all' => $updated,
-            ],
-            admin_url('admin.php')
-        );
+	        $redirect = add_query_arg(
+	            [
+	                'page' => 'wppk-newsletter',
+	                'tab' => 'settings',
+	                'wppk_jetpack_post_only_all' => $updated,
+	            ],
+	            admin_url('admin.php')
+	        );
         wp_safe_redirect($redirect);
         exit;
     }
@@ -2986,22 +3193,21 @@ final class WPPK_Newsletter
         echo '<input type="hidden" name="audience_mode" value="' . esc_attr($active_audience === 'prod' ? 'dev' : 'prod') . '">';
         echo '<button type="submit" class="button button-secondary">' . esc_html($active_audience === 'prod' ? 'Passer en DEV' : 'Passer en PROD') . '</button>';
         echo '</form>';
-        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="wppk-dashboard-hero-form">';
-        echo '<input type="hidden" name="action" value="wppk_toggle_digest_pause">';
-        wp_nonce_field('wppk_toggle_digest_pause');
-        echo '<button type="submit" class="button ' . esc_attr($is_paused ? 'button-primary' : 'button-secondary') . '">' . esc_html($is_paused ? 'Reprendre' : 'Mettre en pause') . '</button>';
-        echo '</form>';
-        echo '<div class="wppk-version-badge">v' . esc_html(WPPKNEWSLETTER_VERSION) . '</div></div></div>';
-        echo '<div class="wppk-stat-grid wppk-stat-grid--dashboard">';
-        echo $this->render_stat_card(__('Abonnes actifs', 'wppknewsletter'), $overview_metrics['active_value'], $overview_metrics['active_meta']);
-        echo $this->render_stat_card(__('Emails envoyes', 'wppknewsletter'), $overview_metrics['sent_value'], $overview_metrics['sent_meta']);
-        echo $this->render_stat_card($overview_metrics['third_title'], $overview_metrics['third_value'], $overview_metrics['third_meta']);
-        $campaign_value = '—';
-        $campaign_meta = 'Aucune campagne en cours.';
-        $today = current_datetime()->format('Y-m-d');
-        $campaign_option = $this->get_digest_sent_option_name($today, $active_audience);
-        $campaign = $this->get_digest_campaign_payload($campaign_option);
-        if ($this->is_digest_campaign_sent($campaign)) {
+	        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="wppk-dashboard-hero-form">';
+	        echo '<input type="hidden" name="action" value="wppk_toggle_digest_pause">';
+	        wp_nonce_field('wppk_toggle_digest_pause');
+	        echo '<button type="submit" class="button ' . esc_attr($is_paused ? 'button-primary' : 'button-secondary') . '">' . esc_html($is_paused ? 'Reprendre' : 'Mettre en pause') . '</button>';
+	        echo '</form>';
+	        echo '<div class="wppk-version-badge">v' . esc_html(WPPKNEWSLETTER_VERSION) . '</div></div></div>';
+
+	        $campaign_value = '—';
+	        $campaign_meta = 'Aucune campagne en cours.';
+	        $today = current_datetime()->format('Y-m-d');
+	        $campaign_option = $this->get_digest_sent_option_name($today, $active_audience);
+	        $campaign = $this->get_digest_campaign_payload($campaign_option);
+	        $other_audience = $active_audience === 'dev' ? 'prod' : 'dev';
+	        $other_campaign = $this->get_digest_campaign_payload($this->get_digest_sent_option_name($today, $other_audience));
+	        if ($this->is_digest_campaign_sent($campaign)) {
             $total = (int) ($campaign['total'] ?? 0);
             $sent_total = (int) ($campaign['sent_total'] ?? ($campaign['sent'] ?? 0));
             $campaign_value = $total > 0 ? sprintf('%d/%d', $total, $total) : 'OK';
@@ -3010,12 +3216,26 @@ final class WPPK_Newsletter
             $processed = (int) ($campaign['processed_total'] ?? 0);
             $total = (int) ($campaign['total'] ?? 0);
             $sent_total = (int) ($campaign['sent_total'] ?? 0);
-            $campaign_value = $total > 0 ? sprintf('%d/%d', $processed, $total) : (string) $processed;
-            $campaign_meta = sprintf('En cours (ok=%d).', $sent_total);
-        }
-        echo $this->render_stat_card('Campagne du jour', $campaign_value, $campaign_meta);
-        echo '</div>';
-        echo '</section>';
+	            $campaign_value = $total > 0 ? sprintf('%d/%d', $processed, $total) : (string) $processed;
+	            $campaign_meta = sprintf('En cours (ok=%d).', $sent_total);
+	        }
+	        $campaign_meta = sprintf('%s · %s', strtoupper($active_audience), $campaign_meta);
+	        if (!$this->is_digest_campaign_sent($campaign) && $this->is_digest_campaign_sent($other_campaign)) {
+	            $campaign_meta .= sprintf(' (envoyé sur %s)', strtoupper($other_audience));
+	        }
+
+	        echo '<div class="wppk-stat-grid wppk-stat-grid--dashboard">';
+	        echo $this->render_stat_card(__('Abonnes actifs', 'wppknewsletter'), $overview_metrics['active_value'], $overview_metrics['active_meta']);
+	        echo $this->render_stat_card(__('Desinscriptions', 'wppknewsletter'), $overview_metrics['third_value'], $overview_metrics['third_meta']);
+	        echo $this->render_stat_card('Campagne du jour', $campaign_value, $campaign_meta);
+	        echo $this->render_stat_card(__('Emails envoyes', 'wppknewsletter'), $overview_metrics['sent_value'], $overview_metrics['sent_meta']);
+	        echo $this->render_stat_card($overview_metrics['cost_title'], $overview_metrics['cost_value'], $overview_metrics['cost_meta']);
+	        echo '</div>';
+
+	        if (!empty($_GET['wppk_diag'])) {
+	            echo $this->render_dashboard_diagnostics_panel($today);
+	        }
+	        echo '</section>';
 
         echo '<section class="wppk-panel wppk-dashboard-card wppk-dashboard-card--test">';
         echo '<div class="wppk-panel__header"><div><h2 class="wppk-panel__title">Envoyer un test</h2><p class="wppk-panel__copy">Déclenche uniquement un digest de test vers l’adresse de ton choix.</p></div></div>';
@@ -3298,12 +3518,34 @@ final class WPPK_Newsletter
         ) ?: [];
     }
 
-    private function get_dashboard_overview_metrics(): array
-    {
-        global $wpdb;
-        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
-        $active_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'active' AND confirmed = 1");
-        $total_contacts = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table}");
+	    private function get_dashboard_overview_metrics(): array
+	    {
+	        global $wpdb;
+	        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
+	        $active_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'active' AND confirmed = 1");
+	        $total_contacts = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table}");
+
+	        $ses_price_per_1000 = (float) apply_filters('wppk_ses_price_per_1000', 0.10);
+	        $emails_sent_mtd = $this->get_emails_sent_mtd();
+
+	        $bounds = $this->get_month_bounds_utc();
+	        $now_local = $bounds['now_local'];
+	        $month_start_local = $bounds['month_start_local'];
+	        $days_elapsed = max(1, (int) $month_start_local->diff($now_local)->format('%a') + 1);
+	        $days_in_month = (int) $now_local->format('t');
+
+	        $emails_projected = (int) round(($emails_sent_mtd / max(1, $days_elapsed)) * max(1, $days_in_month));
+	        $cost_mtd_usd = ($emails_sent_mtd / 1000.0) * $ses_price_per_1000;
+	        $cost_projected_usd = ($emails_projected / 1000.0) * $ses_price_per_1000;
+
+	        $estimated_cost_value = '$' . number_format_i18n($cost_mtd_usd, 2);
+	        $estimated_cost_meta = sprintf(
+	            'Réel MTD: %s emails (logs plugin) · Projection: $%s (%s emails) · SES $%.2f / 1000',
+	            number_format_i18n($emails_sent_mtd, 0),
+	            number_format_i18n($cost_projected_usd, 2),
+	            number_format_i18n($emails_projected, 0),
+	            $ses_price_per_1000
+	        );
 
         $tz = wp_timezone();
         $now = new DateTimeImmutable('now', $tz);
@@ -3313,42 +3555,34 @@ final class WPPK_Newsletter
         $net_growth_7d = $subscribed_7d - $unsubscribed_7d;
 
         $active_value = number_format_i18n($active_count, 0) . ' / ' . number_format_i18n($total_contacts, 0);
-        $active_meta = sprintf(__('Base active · %+d / 7j', 'wppknewsletter'), $net_growth_7d);
+	        $active_meta = sprintf(__('Base active · %+d / 7j', 'wppknewsletter'), $net_growth_7d);
 
-        $sent_value = '—';
-        $sent_meta = __('AWS SES, dernières 24h', 'wppknewsletter');
-        $third_title = __('Desinscriptions', 'wppknewsletter');
-        $third_value = number_format_i18n($unsubscribed_7d, 0);
-        $third_meta = __('7 derniers jours', 'wppknewsletter');
+	        $sent_value = number_format_i18n($emails_sent_mtd, 0);
+	        $sent_meta = sprintf(
+	            'Depuis le 1er (%s) · logs plugin',
+	            esc_html($month_start_local->format('d/m'))
+	        );
+	        $third_title = __('Desinscriptions', 'wppknewsletter');
+	        $third_value = sprintf(
+	            '+%s / -%s',
+	            number_format_i18n($subscribed_7d, 0),
+	            number_format_i18n($unsubscribed_7d, 0)
+	        );
+	        $third_meta = __('7 derniers jours', 'wppknewsletter');
 
-        $aws_quota = $this->get_aws_ses_stats();
-        $aws_sent_last_24h = $this->get_aws_ses_last_24_hours_total();
-
-        if (is_array($aws_quota)) {
-            $sent_value = number_format_i18n((int) ($aws_sent_last_24h ?? $aws_quota['sent_last_24_hours']), 0);
-        } else {
-            $summary = $this->get_stats_dashboard_data('day');
-            $sent_value = number_format_i18n((int) ($summary['emails_total'] ?? 0), 0);
-            $sent_meta = __('Historique plugin, dernières 24h', 'wppknewsletter');
-        }
-
-        if (is_array($aws_quota)) {
-            $quota_remaining = max(0, (int) round($aws_quota['max_24_hour_send'] - (int) ($aws_sent_last_24h ?? $aws_quota['sent_last_24_hours'])));
-            $third_title = __('Quota restant', 'wppknewsletter');
-            $third_value = number_format_i18n($quota_remaining, 0);
-            $third_meta = __('AWS SES, 24h glissantes', 'wppknewsletter');
-        }
-
-        return [
-            'active_value' => $active_value,
-            'active_meta' => $active_meta,
-            'sent_value' => $sent_value,
-            'sent_meta' => $sent_meta,
-            'third_title' => $third_title,
-            'third_value' => $third_value,
-            'third_meta' => $third_meta,
-        ];
-    }
+	        return [
+	            'active_value' => $active_value,
+	            'active_meta' => $active_meta,
+	            'sent_value' => $sent_value,
+	            'sent_meta' => $sent_meta,
+	            'third_title' => $third_title,
+	            'third_value' => $third_value,
+	            'third_meta' => $third_meta,
+	            'cost_title' => __('Coût estimé', 'wppknewsletter'),
+	            'cost_value' => $estimated_cost_value,
+	            'cost_meta' => $estimated_cost_meta,
+	        ];
+	    }
 
     private function get_delivery_service_label(array $settings): string
     {
@@ -4469,11 +4703,14 @@ final class WPPK_Newsletter
     {
         global $wpdb;
         $table = $this->table_name(self::LOG_TABLE);
-        $wpdb->insert($table, [
+        $ok = $wpdb->insert($table, [
             'sent_at' => current_time('mysql', true),
             'emails_sent' => $emails_sent,
             'posts_count' => $posts_count,
         ]);
+        if (!$ok) {
+            $this->log_event('system', 'error', sprintf('Échec insertion logs (%s): %s', $table, (string) $wpdb->last_error));
+        }
     }
 
     private function get_stats(): array
@@ -5297,6 +5534,56 @@ final class WPPK_Newsletter
         return (string) ob_get_clean();
     }
 
+    private function render_dashboard_diagnostics_panel(string $today): string
+    {
+        if (!current_user_can('manage_options')) {
+            return '';
+        }
+
+        $active = $this->get_active_audience();
+        $prod_option = $this->get_digest_sent_option_name($today, 'prod');
+        $dev_option = $this->get_digest_sent_option_name($today, 'dev');
+        $prod_payload = $this->get_digest_campaign_payload($prod_option);
+        $dev_payload = $this->get_digest_campaign_payload($dev_option);
+
+        global $wpdb;
+        $log_table = $this->table_name(self::LOG_TABLE);
+        $last_log = $wpdb->get_row("SELECT sent_at, emails_sent, posts_count FROM {$log_table} ORDER BY sent_at DESC, id DESC LIMIT 1", ARRAY_A);
+
+        $encode = static function (?array $payload): string {
+            if (!$payload) {
+                return '—';
+            }
+            $picked = [
+                'status' => $payload['status'] ?? '',
+                'total' => (int) ($payload['total'] ?? 0),
+                'processed_total' => (int) ($payload['processed_total'] ?? 0),
+                'sent_total' => (int) ($payload['sent_total'] ?? ($payload['sent'] ?? 0)),
+                'source' => (string) ($payload['source'] ?? ''),
+                'started_at' => (string) ($payload['started_at'] ?? ''),
+                'updated_at' => (string) ($payload['updated_at'] ?? ''),
+                'finished_at' => (string) ($payload['finished_at'] ?? ''),
+            ];
+            return (string) wp_json_encode($picked, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        };
+
+        ob_start();
+        echo '<div class="wppk-panel" style="margin-top:14px;">';
+        echo '<div class="wppk-panel__header"><div><h3 class="wppk-panel__title">Diagnostics (wppk_diag=1)</h3><p class="wppk-panel__copy">Aide à comprendre pourquoi “Campagne du jour” / “Emails envoyés” ne reflètent pas un envoi.</p></div></div>';
+        echo '<table class="widefat striped"><thead><tr><th>Clé</th><th>Valeur</th></tr></thead><tbody>';
+        echo '<tr><td>Audience active</td><td><code>' . esc_html(strtoupper($active)) . '</code></td></tr>';
+        echo '<tr><td>Option PROD</td><td><code>' . esc_html($prod_option) . '</code><br><code>' . esc_html($encode($prod_payload)) . '</code></td></tr>';
+        echo '<tr><td>Option DEV</td><td><code>' . esc_html($dev_option) . '</code><br><code>' . esc_html($encode($dev_payload)) . '</code></td></tr>';
+        if (is_array($last_log)) {
+            echo '<tr><td>Dernier log</td><td><code>' . esc_html((string) ($last_log['sent_at'] ?? '')) . '</code> · emails=' . esc_html((string) ($last_log['emails_sent'] ?? '0')) . ' · posts=' . esc_html((string) ($last_log['posts_count'] ?? '0')) . '</td></tr>';
+        } else {
+            echo '<tr><td>Dernier log</td><td>—</td></tr>';
+        }
+        echo '</tbody></table>';
+        echo '</div>';
+        return (string) ob_get_clean();
+    }
+
     private function ensure_cron_schedule(): void
     {
         $scheduled = function_exists('wp_get_scheduled_event') ? wp_get_scheduled_event(self::CRON_HOOK) : null;
@@ -5348,6 +5635,12 @@ final class WPPK_Newsletter
             'aws_ses_region' => 'eu-north-1',
             'aws_ses_access_key_id' => '',
             'aws_ses_secret_access_key' => '',
+            'floating_button_enabled' => 0,
+            'floating_button_label' => 'Newsletter',
+            'floating_button_bg_color' => '#2f80ed',
+            'floating_button_padding' => 14,
+            'floating_button_radius' => 999,
+            'floating_button_target_url' => 'https://mondary.design/newsletter/',
         ];
     }
 
@@ -5458,6 +5751,30 @@ final class WPPK_Newsletter
         return is_array($value) ? $value : null;
     }
 
+    private function is_stale_digest_campaign(?array $payload): bool
+    {
+        if (!$payload) {
+            return false;
+        }
+
+        $status = (string) ($payload['status'] ?? '');
+        if ($status !== 'sending') {
+            return false;
+        }
+
+        $updated = (string) ($payload['updated_at'] ?? $payload['started_at'] ?? '');
+        if ($updated === '') {
+            return false;
+        }
+
+        $ts = strtotime($updated . ' UTC');
+        if (!$ts) {
+            return false;
+        }
+
+        return (time() - $ts) > (30 * MINUTE_IN_SECONDS);
+    }
+
     private function is_digest_campaign_sent(?array $payload): bool
     {
         if (!$payload) {
@@ -5565,13 +5882,37 @@ final class WPPK_Newsletter
         $sent_ok = 0;
         $new_last_id = $last_id;
 
+        $flush_every = 10;
+        $flush_index = 0;
+
         foreach ($subscribers as $subscriber) {
             $processed_count++;
             $new_last_id = max($new_last_id, (int) $subscriber['id']);
 
-            $html = $this->build_email_html($posts, $settings, $subscriber['email'], $subscriber['unsubscribe_token']);
-            if (wp_mail($subscriber['email'], $subject, $html, $headers)) {
-                $sent_ok++;
+            try {
+                $html = $this->build_email_html($posts, $settings, $subscriber['email'], $subscriber['unsubscribe_token']);
+                if (wp_mail($subscriber['email'], $subject, $html, $headers)) {
+                    $sent_ok++;
+                }
+            } catch (Throwable $e) {
+                $this->log_event('cron', 'error', sprintf('Erreur envoi email=%s: %s', (string) ($subscriber['email'] ?? ''), $e->getMessage()));
+            }
+
+            $flush_index++;
+            if ($flush_index >= $flush_every) {
+                $flush_index = 0;
+                $payload = array_merge($campaign, [
+                    'status' => 'sending',
+                    'updated_at' => current_time('mysql', true),
+                    'total' => $total,
+                    'batch_size' => $batch_size,
+                    'last_id' => $new_last_id,
+                    'processed_total' => (int) ($campaign['processed_total'] ?? 0) + $processed_count,
+                    'sent_total' => (int) ($campaign['sent_total'] ?? 0) + $sent_ok,
+                    'last_batch_processed' => $processed_count,
+                    'last_batch_sent' => $sent_ok,
+                ]);
+                update_option($campaign_option, $payload, false);
             }
         }
 
