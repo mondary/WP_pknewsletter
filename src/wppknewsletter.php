@@ -3,7 +3,7 @@
  * Plugin Name: PKnewsletter
  * Plugin URI: https://mondary.design
  * Description: Lightweight daily digest newsletter with subscriber management, follow.it-inspired email cards, and unsubscribe handling.
- * Version: 2.35
+ * Version: 2.36
  * Author: Clement Mondary
  * License: GPL-2.0-or-later
  */
@@ -12,11 +12,13 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WPPKNEWSLETTER_VERSION', '2.35');
+define('WPPKNEWSLETTER_VERSION', '2.36');
 define('WPPKNEWSLETTER_FILE', __FILE__);
 define('WPPKNEWSLETTER_PATH', plugin_dir_path(__FILE__));
 define('WPPKNEWSLETTER_URL', plugin_dir_url(__FILE__));
 
 require_once WPPKNEWSLETTER_PATH . 'includes/class-wppk-newsletter.php';
+require_once WPPKNEWSLETTER_PATH . 'includes/class-wppknewsletter-sync.php';
 
 WPPK_Newsletter::boot();
+WPPK_Newsletter_Sync::boot();

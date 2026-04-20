@@ -5545,6 +5545,9 @@ final class WPPK_Newsletter
         $dev_option = $this->get_digest_sent_option_name($today, 'dev');
         $prod_payload = $this->get_digest_campaign_payload($prod_option);
         $dev_payload = $this->get_digest_campaign_payload($dev_option);
+        $cron_count = $this->get_scheduled_hook_occurrences(self::CRON_HOOK);
+        $next_ts = (int) wp_next_scheduled(self::CRON_HOOK);
+        $next_run = $next_ts > 0 ? wp_date('Y-m-d H:i:s', $next_ts) : '—';
 
         global $wpdb;
         $log_table = $this->table_name(self::LOG_TABLE);
@@ -5572,6 +5575,7 @@ final class WPPK_Newsletter
         echo '<div class="wppk-panel__header"><div><h3 class="wppk-panel__title">Diagnostics (wppk_diag=1)</h3><p class="wppk-panel__copy">Aide à comprendre pourquoi “Campagne du jour” / “Emails envoyés” ne reflètent pas un envoi.</p></div></div>';
         echo '<table class="widefat striped"><thead><tr><th>Clé</th><th>Valeur</th></tr></thead><tbody>';
         echo '<tr><td>Audience active</td><td><code>' . esc_html(strtoupper($active)) . '</code></td></tr>';
+        echo '<tr><td>CRON: occurrences hook</td><td><code>' . esc_html((string) $cron_count) . '</code> · prochain: <code>' . esc_html($next_run) . '</code></td></tr>';
         echo '<tr><td>Option PROD</td><td><code>' . esc_html($prod_option) . '</code><br><code>' . esc_html($encode($prod_payload)) . '</code></td></tr>';
         echo '<tr><td>Option DEV</td><td><code>' . esc_html($dev_option) . '</code><br><code>' . esc_html($encode($dev_payload)) . '</code></td></tr>';
         if (is_array($last_log)) {
@@ -5587,6 +5591,15 @@ final class WPPK_Newsletter
     private function ensure_cron_schedule(): void
     {
         $scheduled = function_exists('wp_get_scheduled_event') ? wp_get_scheduled_event(self::CRON_HOOK) : null;
+        $events_count = $this->get_scheduled_hook_occurrences(self::CRON_HOOK);
+
+        // Migration / hosting changes can lead to multiple identical scheduled events for the same hook,
+        // causing multiple triggers per minute. If we detect duplicates, reset to a single schedule.
+        if ($events_count > 1) {
+            wp_clear_scheduled_hook(self::CRON_HOOK);
+            $scheduled = null;
+            $events_count = 0;
+        }
 
         if ($scheduled && isset($scheduled->schedule) && $scheduled->schedule !== 'wppk_digest_check') {
             wp_clear_scheduled_hook(self::CRON_HOOK);
@@ -5596,6 +5609,33 @@ final class WPPK_Newsletter
         if (!$scheduled && !wp_next_scheduled(self::CRON_HOOK)) {
             wp_schedule_event(time() + MINUTE_IN_SECONDS, 'wppk_digest_check', self::CRON_HOOK);
         }
+    }
+
+    private function get_scheduled_hook_occurrences(string $hook): int
+    {
+        if (!function_exists('_get_cron_array')) {
+            return 0;
+        }
+
+        $cron = _get_cron_array();
+        if (!is_array($cron) || !$cron) {
+            return 0;
+        }
+
+        $count = 0;
+        foreach ($cron as $timestamp => $events) {
+            if (!is_array($events) || empty($events[$hook]) || !is_array($events[$hook])) {
+                continue;
+            }
+
+            foreach ($events[$hook] as $payload) {
+                if (is_array($payload)) {
+                    $count++;
+                }
+            }
+        }
+
+        return $count;
     }
 
     private function get_settings(): array

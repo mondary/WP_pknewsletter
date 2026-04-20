@@ -4,7 +4,7 @@ Tags: newsletter, email, digest, subscribers
 Requires at least: 6.0
 Tested up to: 6.5
 Requires PHP: 7.4
-Stable tag: 2.35
+Stable tag: 2.36
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -33,6 +33,11 @@ Features:
 Yes. New subscribers must confirm via email.
 
 == Changelog ==
+
+= 2.36 =
+* Cron: de-duplicate scheduled events for the digest hook (prevents double triggers after hosting migrations).
+* Admin: diagnostics panel now shows cron hook occurrences + next scheduled run.
+* DevOps: add REST sync endpoints (manifest + push) for automated deployments.
 
 = 2.35 =
 * Digest: auto-recovers stuck "sending" campaigns after 30 minutes (reset + restart on next trigger).
