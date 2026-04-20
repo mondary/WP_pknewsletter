@@ -4,7 +4,7 @@ Tags: newsletter, email, digest, subscribers
 Requires at least: 6.0
 Tested up to: 6.5
 Requires PHP: 7.4
-Stable tag: 2.39
+Stable tag: 2.40
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -33,6 +33,9 @@ Features:
 Yes. New subscribers must confirm via email.
 
 == Changelog ==
+
+= 2.40 =
+* Version bump after plugin icon and branding updates.
 
 = 2.39 =
 * DevOps: force sync-triggered opcache refresh by shipping a new version after enabling invalidation.
