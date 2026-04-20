@@ -9,6 +9,8 @@ final class WPPK_Newsletter_Sync
     private const REST_NAMESPACE = 'wppknewsletter/v1';
     private const MANIFEST_ROUTE = '/sync-plugin/manifest';
     private const SYNC_ROUTE = '/sync-plugin';
+    private const DIAG_ROUTE = '/diag';
+    private const DIGEST_CRON_HOOK = 'wppk_newsletter_digest_event';
 
     public static function boot(): void
     {
@@ -48,6 +50,12 @@ final class WPPK_Newsletter_Sync
                     'default' => true,
                 ],
             ],
+        ]);
+
+        register_rest_route(self::REST_NAMESPACE, self::DIAG_ROUTE, [
+            'methods' => WP_REST_Server::READABLE,
+            'callback' => [$this, 'handle_diag'],
+            'permission_callback' => [$this, 'permission_manage_options'],
         ]);
     }
 
@@ -216,6 +224,23 @@ final class WPPK_Newsletter_Sync
         ], $status);
     }
 
+    public function handle_diag(WP_REST_Request $request): WP_REST_Response
+    {
+        $cron_count = $this->count_scheduled_hook_occurrences(self::DIGEST_CRON_HOOK);
+        $next_ts = (int) wp_next_scheduled(self::DIGEST_CRON_HOOK);
+
+        return new WP_REST_Response([
+            'plugin' => 'WPpknewsletter',
+            'version' => defined('WPPKNEWSLETTER_VERSION') ? WPPKNEWSLETTER_VERSION : '',
+            'wp_timezone' => function_exists('wp_timezone_string') ? wp_timezone_string() : '',
+            'server_time_utc' => gmdate('Y-m-d H:i:s'),
+            'digest_cron_hook' => self::DIGEST_CRON_HOOK,
+            'digest_cron_occurrences' => $cron_count,
+            'digest_cron_next_ts' => $next_ts ?: null,
+            'digest_cron_next_local' => $next_ts > 0 ? wp_date('Y-m-d H:i:s', $next_ts) : null,
+        ]);
+    }
+
     private function sanitize_relative_path(string $path): string
     {
         $path = str_replace('\\', '/', trim($path));
@@ -237,5 +262,31 @@ final class WPPK_Newsletter_Sync
 
         return $path;
     }
-}
 
+    private function count_scheduled_hook_occurrences(string $hook): int
+    {
+        if (!function_exists('_get_cron_array')) {
+            return 0;
+        }
+
+        $cron = _get_cron_array();
+        if (!is_array($cron) || !$cron) {
+            return 0;
+        }
+
+        $count = 0;
+        foreach ($cron as $timestamp => $events) {
+            if (!is_array($events) || empty($events[$hook]) || !is_array($events[$hook])) {
+                continue;
+            }
+
+            foreach ($events[$hook] as $payload) {
+                if (is_array($payload)) {
+                    $count++;
+                }
+            }
+        }
+
+        return $count;
+    }
+}
