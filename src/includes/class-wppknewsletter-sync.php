@@ -171,6 +171,10 @@ final class WPPK_Newsletter_Sync
                 $errors[] = sprintf('Ecriture echouee: %s', $rel);
                 continue;
             }
+
+            if (function_exists('opcache_invalidate')) {
+                @opcache_invalidate($abs, true);
+            }
         }
 
         foreach ($delete_paths as $rel) {

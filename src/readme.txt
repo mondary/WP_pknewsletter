@@ -4,7 +4,7 @@ Tags: newsletter, email, digest, subscribers
 Requires at least: 6.0
 Tested up to: 6.5
 Requires PHP: 7.4
-Stable tag: 2.37
+Stable tag: 2.38
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -33,6 +33,9 @@ Features:
 Yes. New subscribers must confirm via email.
 
 == Changelog ==
+
+= 2.38 =
+* DevOps: sync endpoint now invalidates OPcache entries for updated files (ensures new code/version is picked up).
 
 = 2.37 =
 * DevOps: add an authenticated REST diagnostics endpoint for cron status (`/wppknewsletter/v1/diag`).
