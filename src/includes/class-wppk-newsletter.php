@@ -1722,7 +1722,7 @@ final class WPPK_Newsletter
 	        ];
 	        $redirect_args['subscriber_view'] = 'trash';
 	        $posted_view = sanitize_key($_POST['subscriber_view'] ?? '');
-	        if (in_array($posted_view, ['active', 'inactive', 'trash'], true)) {
+	        if (in_array($posted_view, ['active', 'pending', 'inactive', 'trash'], true)) {
 	            $redirect_args['subscriber_view'] = $posted_view;
 	        }
 
@@ -2753,10 +2753,10 @@ final class WPPK_Newsletter
 	    {
 	        $search = sanitize_text_field(wp_unslash($_GET['subscriber_s'] ?? ''));
 	        $view = sanitize_key($_GET['subscriber_view'] ?? 'active');
-	        if (!in_array($view, ['active', 'inactive', 'trash'], true)) {
+	        if (!in_array($view, ['active', 'pending', 'inactive', 'trash'], true)) {
 	            $view = 'active';
 	        }
-	        $status_filter = $view === 'inactive' ? 'inactive' : 'active';
+	        $status_filter = $view === 'inactive' ? 'inactive' : ($view === 'pending' ? 'pending' : 'active');
 	        $channel_filter = sanitize_text_field(wp_unslash($_GET['subscriber_channel'] ?? ''));
 	        $page_num = max(1, absint($_GET['subscriber_page_num'] ?? 1));
 	        $per_page_options = [25, 50, 100, 250];
@@ -2917,20 +2917,22 @@ final class WPPK_Newsletter
 	            return;
 	        }
 
-	        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="if(this.bulk_action_name && this.bulk_action_name.value===\"trash\"){return window.confirm(\"Déplacer les abonnés sélectionnés en corbeille ?\");}return true;">';
+	        $bulk_form_id = 'wppk-bulk-subscriber-form';
+	        echo '<form id="' . esc_attr($bulk_form_id) . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="if(this.bulk_action_name && this.bulk_action_name.value===\"trash\"){return window.confirm(\"Déplacer les abonnés sélectionnés en corbeille ?\");}return true;">';
 	        echo '<input type="hidden" name="action" value="wppk_bulk_subscriber_action">';
 	        echo '<input type="hidden" name="subscriber_view" value="' . esc_attr($view) . '">';
 	        wp_nonce_field('wppk_bulk_subscriber_action');
         echo '<div class="wppk-bulkbar">';
         echo '<div class="wppk-bulkbar__actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">';
-		        echo '<select name="bulk_action_name" style="min-width:220px;"><option value="">Action groupée</option><option value="activate">Réactiver</option><option value="deactivate">Désactiver</option><option value="trash">Supprimer (corbeille)</option></select>';
+		        echo '<select name="bulk_action_name" style="min-width:220px;"><option value="">Action groupée</option><option value="activate">Activer</option><option value="deactivate">Désactiver</option><option value="trash">Supprimer (corbeille)</option></select>';
         echo '<button type="submit" class="button button-secondary">' . esc_html(__('Appliquer', 'wppknewsletter')) . '</button>';
         echo '</div>';
-        echo '<div class="wppk-bulkbar__right">';
-        echo $this->render_subscriber_views_nav($view, 'inline');
+	        echo '<div class="wppk-bulkbar__right">';
+	        echo $this->render_subscriber_views_nav($view, 'inline');
 		        echo '<div class="wppk-bulkbar__count">' . esc_html(sprintf('%d abonnés', $total)) . '</div>';
-        echo '</div>';
+	        echo '</div>';
 		        echo '</div>';
+        echo '</form>';
         echo '<div class="wppk-table-shell"><table class="widefat striped wppk-table"><thead><tr><th><input type="checkbox" onclick="jQuery(\'.wppk-subscriber-check\').prop(\'checked\', this.checked)"></th><th>Email address</th><th>1st subscription</th><th>Unsubscribed</th><th>Resubscribed</th><th>Status</th><th>Source</th><th>Confirmation</th><th>Channels</th><th>Email delivery time</th><th>Actions</th></tr></thead><tbody>';
         foreach ($rows as $row) {
             $status_badge = $row['status'] === 'active'
@@ -2944,7 +2946,7 @@ final class WPPK_Newsletter
             $delivery_time = sprintf('%02d:00', (int) $row['preferred_hour']);
             $resubscribed_at = $row['status'] === 'unsubscribed' ? '—' : ($row['resubscribed_at'] ?: '—');
             echo '<tr>';
-            echo '<td><input type="checkbox" class="wppk-subscriber-check" name="subscriber_ids[]" value="' . esc_attr((string) $row['id']) . '"></td>';
+            echo '<td><input type="checkbox" class="wppk-subscriber-check" form="' . esc_attr($bulk_form_id) . '" name="subscriber_ids[]" value="' . esc_attr((string) $row['id']) . '"></td>';
             echo '<td>' . esc_html($row['email']) . '</td>';
             echo '<td>' . esc_html($row['created_at']) . '</td>';
             echo '<td>' . esc_html($row['unsubscribed_at'] ?: '—') . '</td>';
@@ -2957,7 +2959,7 @@ final class WPPK_Newsletter
             echo '<td>' . $this->render_subscriber_actions((int) $row['id']) . '</td>';
             echo '</tr>';
         }
-        echo '</tbody></table></div></form>';
+        echo '</tbody></table></div>';
         echo '<script>document.addEventListener("DOMContentLoaded",function(){var input=document.getElementById("wppk_import_file");var label=document.getElementById("wppk_import_file_name");if(!input||!label)return;input.addEventListener("change",function(){label.textContent=input.files&&input.files[0]?input.files[0].name:"Aucun fichier choisi";});});</script>';
 	        echo $this->render_subscriber_pagination($page_num, $per_page, $total, $search, $status_filter, $channel_filter, $view);
 	        if ($edit_id) {
@@ -3275,7 +3277,11 @@ final class WPPK_Newsletter
             'Envois',
             is_array($aws_sending_data) ? 'Emails envoyés par jour via AWS SES' : 'Emails envoyés par jour',
             is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $sending_summary['sending_series'],
-            'wppk-chart-card--mini'
+            'wppk-chart-card--mini',
+            $this->build_today_projection_series(
+                is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $sending_summary['sending_series'],
+                (string) $this->get_active_audience()
+            )
         );
         echo '</div>';
         echo '</section>';
@@ -3311,7 +3317,7 @@ final class WPPK_Newsletter
     {
         $overview_metrics = $this->get_dashboard_overview_metrics();
         $aws_sending_data = $this->get_aws_ses_sending_data('week');
-        $sending_summary = $this->get_stats_dashboard_data('week');
+        $sending_summary = $this->get_stats_dashboard_data('day');
         $month_emails = $this->get_current_month_email_total();
         $estimated_cost = $this->format_estimated_ses_cost((float) $month_emails);
         $growth = $this->get_subscriber_growth_data('day');
@@ -3335,6 +3341,13 @@ final class WPPK_Newsletter
         $growth_secondary_values = array_map(static fn($point) => (int) ($point['value'] ?? 0), $growth_secondary);
         $sending_labels = array_map(static fn($point) => (string) ($point['label'] ?? ''), $series);
         $sending_values = array_map(static fn($point) => (int) ($point['value'] ?? 0), $series);
+        $sending_projection_values = array_fill(0, count($sending_values), null);
+        $planned_today = $this->get_today_planned_emails((string) $this->get_active_audience());
+        if (!empty($sending_projection_values)) {
+            $last_index = count($sending_projection_values) - 1;
+            $current_sent = (int) ($sending_values[$last_index] ?? 0);
+            $sending_projection_values[$last_index] = $planned_today > 0 ? max($planned_today, $current_sent) : 0;
+        }
         echo '<div class="dashboard-widget wppk-widget">';
         echo '<div class="widget-header">';
         echo '<span>WP PK Newsletter</span>';
@@ -3370,9 +3383,9 @@ final class WPPK_Newsletter
 
         echo '<div class="chart-section">';
         echo '<div class="chart-title">Envois</div>';
-        echo '<div class="wppk-widget__subcaption">' . esc_html(is_array($aws_sending_data) ? '5 derniers jours AWS SES' : '5 derniers jours') . '</div>';
+        echo '<div class="wppk-widget__subcaption">' . esc_html(is_array($aws_sending_data) ? '5 derniers jours AWS SES · pointillé = prévu aujourd’hui' : '5 derniers jours · pointillé = prévu aujourd’hui') . '</div>';
         echo '<div class="wppk-widget__canvas-box">';
-        echo '<canvas class="wppk-widget-canvas wppk-widget-canvas--sending" data-labels="' . esc_attr(wp_json_encode($sending_labels)) . '" data-values="' . esc_attr(wp_json_encode($sending_values)) . '"></canvas>';
+        echo '<canvas class="wppk-widget-canvas wppk-widget-canvas--sending" data-labels="' . esc_attr(wp_json_encode($sending_labels)) . '" data-values="' . esc_attr(wp_json_encode($sending_values)) . '" data-projection="' . esc_attr(wp_json_encode($sending_projection_values)) . '"></canvas>';
         echo '</div>';
         echo '</div>';
 
@@ -3485,6 +3498,17 @@ final class WPPK_Newsletter
                                     borderWidth: 2,
                                     pointRadius: 0,
                                     tension: 0.2
+                                },
+                                {
+                                    label: "Prévu aujourd'hui",
+                                    data: JSON.parse(canvas.dataset.projection || "[]"),
+                                    borderColor: "#e17000",
+                                    backgroundColor: "#e17000",
+                                    borderWidth: 2,
+                                    borderDash: [6, 4],
+                                    pointRadius: 0,
+                                    tension: 0.2,
+                                    spanGaps: true
                                 }
                             ]
                         },
@@ -3492,7 +3516,15 @@ final class WPPK_Newsletter
                             responsive: true,
                             maintainAspectRatio: false,
                             plugins: {
-                                legend: { display: false }
+                                legend: {
+                                    position: "bottom",
+                                    labels: {
+                                        usePointStyle: true,
+                                        pointStyle: "line",
+                                        boxWidth: 20,
+                                        padding: 16
+                                    }
+                                }
                             },
                             scales: baseAxis
                         }
@@ -3970,6 +4002,7 @@ final class WPPK_Newsletter
 	        $trash_table = $this->get_subscribers_trash_table_name($this->get_active_audience());
 
 	        $active_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'active'");
+	        $pending_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'pending'");
 	        $inactive_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status IN ('pending','unsubscribed')");
 	        $trash_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$trash_table}");
 
@@ -3979,6 +4012,7 @@ final class WPPK_Newsletter
 	        ];
 	        $items = [
 	            ['key' => 'active', 'label' => 'Actifs', 'count' => $active_count],
+	            ['key' => 'pending', 'label' => 'Pending', 'count' => $pending_count],
 	            ['key' => 'inactive', 'label' => 'Inactifs', 'count' => $inactive_count],
 	            ['key' => 'trash', 'label' => 'Corbeille', 'count' => $trash_count],
 	        ];
@@ -4332,7 +4366,12 @@ final class WPPK_Newsletter
         echo $this->render_line_chart_card(
             'Envois',
             is_array($aws_sending_data) ? 'Emails envoyes par jour via AWS SES' : 'Emails envoyes par jour',
-            is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $summary['sending_series']
+            is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $summary['sending_series'],
+            '',
+            $this->build_today_projection_series(
+                is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $summary['sending_series'],
+                (string) $this->get_active_audience()
+            )
         );
 
         // Prefer internal logs for "posts_count" (SES stats can't infer it).
@@ -4833,6 +4872,24 @@ final class WPPK_Newsletter
         ];
     }
 
+    private function get_today_planned_emails(string $audience): int
+    {
+        $audience = $this->sanitize_audience_mode($audience);
+        $today = wp_date('Y-m-d');
+        $campaign = $this->get_digest_campaign_payload($this->get_digest_sent_option_name($today, $audience));
+        $has_posts_today = !empty($this->get_digest_posts());
+
+        if (!$has_posts_today) {
+            return 0;
+        }
+
+        if (is_array($campaign) && isset($campaign['total'])) {
+            return max(0, (int) $campaign['total']);
+        }
+
+        return max(0, $this->count_active_subscribers_for_audience($audience));
+    }
+
     private function get_current_month_email_total(): int
     {
         $aws_sending_data = $this->get_aws_ses_sending_data('month');
@@ -4979,10 +5036,14 @@ final class WPPK_Newsletter
         return '<div class="' . esc_attr($classes) . '"><div class="wppk-channel-card__label">' . esc_html($label) . '</div><div class="wppk-channel-card__count">(' . esc_html((string) $count) . ')</div></div>';
     }
 
-    private function render_line_chart_card(string $title, string $caption, array $series, string $card_class = ''): string
+    private function render_line_chart_card(string $title, string $caption, array $series, string $card_class = '', array $projectionSeries = []): string
     {
         $classes = trim('wppk-chart-card ' . $card_class);
-        return '<div class="' . esc_attr($classes) . '"><div class="wppk-chart-card__header"><div><h3 class="wppk-stats-section-title" style="margin:0;">' . esc_html($title) . '</h3><p class="wppk-chart-card__caption">' . esc_html($caption) . '</p></div></div>' . $this->render_svg_line_chart($series, $card_class === 'wppk-chart-card--mini') . '</div>';
+        $legend = '';
+        if (!empty($projectionSeries)) {
+            $legend = '<div class="wppk-chart-legend"><span class="wppk-chart-legend__item"><span class="wppk-chart-legend__dot is-primary"></span>Envoyés</span><span class="wppk-chart-legend__item"><span class="wppk-chart-legend__dot" style="background:#00b65e;"></span>Prévu (aujourd’hui)</span></div>';
+        }
+        return '<div class="' . esc_attr($classes) . '"><div class="wppk-chart-card__header"><div><h3 class="wppk-stats-section-title" style="margin:0;">' . esc_html($title) . '</h3><p class="wppk-chart-card__caption">' . esc_html($caption) . '</p></div>' . $legend . '</div>' . $this->render_svg_line_chart($series, $card_class === 'wppk-chart-card--mini', $projectionSeries) . '</div>';
     }
 
     private function render_dual_line_chart_card(string $title, string $caption, array $primarySeries, array $secondarySeries, string $primaryLabel, string $secondaryLabel, string $card_class = ''): string
@@ -4992,7 +5053,7 @@ final class WPPK_Newsletter
         return '<div class="' . esc_attr($classes) . '"><div class="wppk-chart-card__header"><div><h3 class="wppk-stats-section-title" style="margin:0;">' . esc_html($title) . '</h3><p class="wppk-chart-card__caption">' . esc_html($caption) . '</p></div>' . $legend . '</div>' . $this->render_svg_dual_line_chart($primarySeries, $secondarySeries, $card_class === 'wppk-chart-card--mini') . '</div>';
     }
 
-    private function render_svg_line_chart(array $series, bool $compact = false): string
+    private function render_svg_line_chart(array $series, bool $compact = false, array $projectionSeries = []): string
     {
         if (!$series) {
             return '<p>Aucune donnee.</p>';
@@ -5007,6 +5068,11 @@ final class WPPK_Newsletter
         $plotWidth = $width - $paddingLeft - $paddingRight;
         $plotHeight = $height - $paddingTop - $paddingBottom;
         $values = array_map(static fn($point) => (int) $point['value'], $series);
+        foreach ($projectionSeries as $projectionPoint) {
+            if (isset($projectionPoint['value']) && $projectionPoint['value'] !== null) {
+                $values[] = (int) $projectionPoint['value'];
+            }
+        }
         $max = max($values);
         $max = $max > 0 ? $max : 1;
         $count = count($series);
@@ -5018,6 +5084,15 @@ final class WPPK_Newsletter
             $y = $paddingTop + $plotHeight - (($point['value'] / $max) * $plotHeight);
             $points[] = round($x, 2) . ',' . round($y, 2);
             $areaPoints[] = round($x, 2) . ',' . round($y, 2);
+        }
+        $projectionPoints = [];
+        foreach ($projectionSeries as $index => $point) {
+            if (!array_key_exists('value', $point) || $point['value'] === null) {
+                continue;
+            }
+            $x = $paddingLeft + ($count > 1 ? ($plotWidth / max(1, ($count - 1))) * $index : $plotWidth / 2);
+            $y = $paddingTop + $plotHeight - ((((int) $point['value']) / $max) * $plotHeight);
+            $projectionPoints[] = round($x, 2) . ',' . round($y, 2);
         }
 
         $area = $paddingLeft . ',' . ($paddingTop + $plotHeight) . ' ' . implode(' ', $areaPoints) . ' ' . ($paddingLeft + $plotWidth) . ',' . ($paddingTop + $plotHeight);
@@ -5038,6 +5113,9 @@ final class WPPK_Newsletter
                 <?php endforeach; ?>
                 <polygon points="<?php echo esc_attr($area); ?>" class="wppk-chart__area" />
                 <polyline points="<?php echo esc_attr(implode(' ', $points)); ?>" class="wppk-chart__line" />
+                <?php if (count($projectionPoints) >= 2) : ?>
+                    <polyline points="<?php echo esc_attr(implode(' ', $projectionPoints)); ?>" class="wppk-chart__line" style="fill:none;stroke:#00b65e;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:8 6;" />
+                <?php endif; ?>
                 <?php foreach ($series as $index => $point) : ?>
                     <?php
                     $x = $paddingLeft + ($count > 1 ? ($plotWidth / ($count - 1)) * $index : $plotWidth / 2);
@@ -5052,6 +5130,32 @@ final class WPPK_Newsletter
         </div>
         <?php
         return (string) ob_get_clean();
+    }
+
+    private function build_today_projection_series(array $series, string $audience): array
+    {
+        if (empty($series)) {
+            return [];
+        }
+
+        $projection = [];
+        foreach ($series as $point) {
+            $projection[] = [
+                'label' => (string) ($point['label'] ?? ''),
+                'value' => null,
+            ];
+        }
+
+        $last_index = count($series) - 1;
+        $planned_today = $this->get_today_planned_emails($audience);
+        $current_today = (int) (($series[$last_index]['value'] ?? 0));
+        $projection[$last_index]['value'] = $planned_today > 0 ? max($planned_today, $current_today) : 0;
+
+        if ($last_index > 0) {
+            $projection[$last_index - 1]['value'] = (int) ($series[$last_index - 1]['value'] ?? 0);
+        }
+
+        return $projection;
     }
 
     private function render_svg_dual_line_chart(array $primarySeries, array $secondarySeries, bool $compact = false): string
