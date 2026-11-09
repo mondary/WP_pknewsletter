@@ -4,7 +4,7 @@ Tags: newsletter, email, digest, subscribers
 Requires at least: 6.0
 Tested up to: 6.5
 Requires PHP: 7.4
-Stable tag: 2.40
+Stable tag: 2026.11.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -33,6 +33,26 @@ Features:
 Yes. New subscribers must confirm via email.
 
 == Changelog ==
+
+= 2026.11.1 =
+* SES/SNS bounce automation, weekly stats report, subscriber/send/error charts, and CalVer versioning.
+
+= 2.46 =
+* Weekly report: now includes the week's stats (subscribers, unsubscribes, net, active, pending, emails sent, errors) alongside the pending list.
+* Weekly report: subject renamed to "Rapport hebdo" and settings section renamed accordingly.
+
+= 2.45 =
+* Stats: subscriber growth charts (active, subscriptions, unsubscriptions), send volume, and send errors per period.
+* Stats: new cards for active, pending, unsubscribed, and errors totals.
+* Dashboard: added an errors chart.
+
+= 2.44 =
+* Pending: weekly admin report every Monday at 09:00 with pending signups, ages, sources, and a direct link to the pending view.
+* Pending: configurable recipient + manual "Send now" button in Settings.
+
+= 2.43 =
+* Bounces: add an SES/SNS webhook that automatically unsubscribes permanent bounces and spam complaints.
+* Bounces: new settings section with the signed webhook URL, optional Topic ARN, and enable/disable toggle.
 
 = 2.40 =
 * Version bump after plugin icon and branding updates.

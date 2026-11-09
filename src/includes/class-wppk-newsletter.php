@@ -8,6 +8,7 @@ final class WPPK_Newsletter
 {
     private const OPTION_KEY = 'wppk_newsletter_settings';
     private const CRON_HOOK = 'wppk_newsletter_digest_event';
+    private const PENDING_REPORT_HOOK = 'wppk_newsletter_pending_report_event';
     private const SUBSCRIBERS_TABLE = 'wppk_newsletter_subscribers';
     private const SUBSCRIBERS_TRASH_TABLE = 'wppk_newsletter_subscribers_trash';
     private const LOG_TABLE = 'wppk_newsletter_logs';
@@ -20,9 +21,12 @@ final class WPPK_Newsletter
     private const LANDING_PAGE_TEMPLATE = 'wppknewsletter/newsletter-landing.php';
     private const JETPACK_DONT_EMAIL_META = '_jetpack_dont_email_post_to_subs';
 
+    private static ?self $instance = null;
+
     public static function boot(): void
     {
         $instance = new self();
+        self::$instance = $instance;
 
         register_activation_hook(WPPKNEWSLETTER_FILE, [$instance, 'activate']);
         register_deactivation_hook(WPPKNEWSLETTER_FILE, [$instance, 'deactivate']);
@@ -59,9 +63,11 @@ final class WPPK_Newsletter
         add_action('admin_post_wppk_resend_confirmation', [$instance, 'handle_resend_confirmation']);
         add_action('admin_post_wppk_send_test_digest', [$instance, 'handle_send_test_digest']);
         add_action('admin_post_wppk_send_digest_now', [$instance, 'handle_manual_send']);
+        add_action('admin_post_wppk_send_pending_report', [$instance, 'handle_send_pending_report']);
         add_action('admin_post_wppk_jetpack_bulk_post_only', [$instance, 'handle_jetpack_bulk_post_only']);
         add_action('admin_post_wppk_jetpack_set_post_only_all_future', [$instance, 'handle_jetpack_set_post_only_all_future']);
         add_action(self::CRON_HOOK, [$instance, 'maybe_send_scheduled_digest']);
+        add_action(self::PENDING_REPORT_HOOK, [$instance, 'send_pending_report']);
         add_action('phpmailer_init', [$instance, 'configure_phpmailer']);
         add_filter('cron_schedules', [$instance, 'add_cron_schedule']);
 
@@ -77,6 +83,11 @@ final class WPPK_Newsletter
             [],
             self::asset_version('assets/admin.css')
         );
+    }
+
+    public static function instance(): ?self
+    {
+        return self::$instance;
     }
 
     private static function asset_version(string $relative_path): string
@@ -204,12 +215,14 @@ final class WPPK_Newsletter
         $this->register_settings();
         update_option('wppk_newsletter_db_version', WPPKNEWSLETTER_VERSION, false);
         $this->ensure_cron_schedule();
+        $this->ensure_pending_report_schedule();
         $this->maybe_create_landing_page();
     }
 
     public function deactivate(): void
     {
         wp_clear_scheduled_hook(self::CRON_HOOK);
+        wp_clear_scheduled_hook(self::PENDING_REPORT_HOOK);
     }
 
     public function maybe_upgrade(): void
@@ -222,6 +235,7 @@ final class WPPK_Newsletter
         }
 
         $this->ensure_cron_schedule();
+        $this->ensure_pending_report_schedule();
         $this->maybe_create_landing_page();
         // Defensive: ensure new tables exist even if db_version was not bumped (or was manually edited).
         $this->ensure_trash_tables();
@@ -353,6 +367,17 @@ final class WPPK_Newsletter
         if ($awsSecretKey === '') {
             $awsSecretKey = (string) ($existing['aws_ses_secret_access_key'] ?? $defaults['aws_ses_secret_access_key']);
         }
+        $sesWebhookSecret = sanitize_text_field($input['ses_webhook_secret'] ?? '');
+        if ($sesWebhookSecret === '') {
+            $sesWebhookSecret = (string) ($existing['ses_webhook_secret'] ?? '');
+        }
+        if ($sesWebhookSecret === '') {
+            $sesWebhookSecret = wp_generate_password(40, false, false);
+        }
+        $pendingReportRecipient = sanitize_email($input['pending_report_recipient'] ?? '');
+        if ($pendingReportRecipient === '') {
+            $pendingReportRecipient = (string) ($existing['pending_report_recipient'] ?? $defaults['pending_report_recipient']);
+        }
 
         $brandName = sanitize_text_field($input['brand_name'] ?? $defaults['brand_name']);
         $senderName = sanitize_text_field($input['sender_name'] ?? '');
@@ -413,6 +438,11 @@ final class WPPK_Newsletter
             'aws_ses_region' => sanitize_text_field($input['aws_ses_region'] ?? $defaults['aws_ses_region']),
             'aws_ses_access_key_id' => sanitize_text_field($input['aws_ses_access_key_id'] ?? $defaults['aws_ses_access_key_id']),
             'aws_ses_secret_access_key' => $awsSecretKey,
+            'ses_bounce_enabled' => !empty($input['ses_bounce_enabled']) ? 1 : 0,
+            'ses_topic_arn' => sanitize_text_field($input['ses_topic_arn'] ?? $defaults['ses_topic_arn']),
+            'ses_webhook_secret' => $sesWebhookSecret,
+            'pending_report_enabled' => !empty($input['pending_report_enabled']) ? 1 : 0,
+            'pending_report_recipient' => $pendingReportRecipient,
             'floating_button_enabled' => !empty($input['floating_button_enabled']) ? 1 : 0,
             'floating_button_label' => $floatingButtonLabel,
             'floating_button_bg_color' => sanitize_hex_color($input['floating_button_bg_color'] ?? $defaults['floating_button_bg_color']) ?: $defaults['floating_button_bg_color'],
@@ -1225,7 +1255,8 @@ final class WPPK_Newsletter
                                     'finished_at' => current_time('mysql', true),
                                 ]));
                                 update_option('wppk_newsletter_last_sent_date', $today, false);
-                                $this->log_send((int) ($batch['sent_total'] ?? 0), (int) ($batch['posts_count'] ?? 0));
+                                $batch_errors = max(0, (int) ($batch['processed_total'] ?? 0) - (int) ($batch['sent_total'] ?? 0));
+                                $this->log_send((int) ($batch['sent_total'] ?? 0), (int) ($batch['posts_count'] ?? 0), $batch_errors);
                                 $this->log_event($source, 'ok', sprintf('Envoi terminé : %d/%d (ok=%d)', (int) ($batch['processed_total'] ?? 0), (int) ($batch['total'] ?? 0), (int) ($batch['sent_total'] ?? 0)));
                             } else {
                                 $this->log_event($source, 'ok', sprintf('Batch %s: %d/%d (ok=%d)', strtoupper($audience), (int) ($batch['processed_total'] ?? 0), (int) ($batch['total'] ?? 0), (int) ($batch['sent_total'] ?? 0)));
@@ -1293,6 +1324,242 @@ final class WPPK_Newsletter
         $args['wppk_debug'] = $result['reason'];
         wp_safe_redirect(add_query_arg($args, admin_url('admin.php')));
         exit;
+    }
+
+    public function handle_send_pending_report(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Accès refusé.', 'wppknewsletter'));
+        }
+
+        check_admin_referer('wppk_send_pending_report');
+
+        $result = $this->send_pending_report(true);
+        $args = [
+            'page' => 'wppk-newsletter',
+            'tab' => 'settings',
+            'wppk_debug' => !empty($result['sent'])
+                ? sprintf('Rapport hebdo envoyé à %s (%d pending).', (string) ($result['recipient'] ?? ''), (int) ($result['count'] ?? 0))
+                : sprintf('Rapport hebdo non envoyé : %s', (string) ($result['reason'] ?? 'erreur')),
+        ];
+        wp_safe_redirect(add_query_arg($args, admin_url('admin.php')));
+        exit;
+    }
+
+    public function send_pending_report(bool $force = false): array
+    {
+        $settings = $this->get_settings();
+        if (!$force && empty($settings['pending_report_enabled'])) {
+            return ['sent' => false, 'reason' => 'disabled', 'count' => 0];
+        }
+
+        $recipient = sanitize_email((string) ($settings['pending_report_recipient'] ?? ''));
+        if (!$recipient || !is_email($recipient)) {
+            $recipient = sanitize_email((string) get_option('admin_email'));
+        }
+        if (!$recipient || !is_email($recipient)) {
+            return ['sent' => false, 'reason' => 'invalid_recipient', 'count' => 0];
+        }
+
+        global $wpdb;
+        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
+        $rows = $wpdb->get_results(
+            "SELECT id, email, created_at, source, signup_process, confirmation_sent_at
+             FROM {$table}
+             WHERE status = 'pending'
+             ORDER BY created_at DESC",
+            ARRAY_A
+        ) ?: [];
+
+        $weekly = $this->get_weekly_report_stats();
+
+        $site_name = wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES);
+        $subject = sprintf(
+            '[%s] Rapport hebdo — %d inscrit(s), %d pending',
+            $site_name,
+            (int) $weekly['subscribed'],
+            count($rows)
+        );
+        $html = $this->build_pending_report_html($rows, $site_name, $weekly);
+        $headers = ['Content-Type: text/html; charset=UTF-8'];
+        if (!empty($settings['sender_email'])) {
+            $headers[] = 'From: ' . $settings['sender_name'] . ' <' . $settings['sender_email'] . '>';
+        }
+        if (!empty($settings['reply_to'])) {
+            $headers[] = 'Reply-To: ' . $settings['reply_to'];
+        }
+        $sent = wp_mail($recipient, $subject, $html, $headers);
+
+        $this->log_event(
+            'pending_report',
+            $sent ? 'ok' : 'error',
+            sprintf('Rapport hebdo %s : %s (%d pending)', $sent ? 'envoyé' : 'échec', $recipient, count($rows))
+        );
+
+        return [
+            'sent' => (bool) $sent,
+            'reason' => $sent ? 'sent' : 'wp_mail_failed',
+            'count' => count($rows),
+            'recipient' => $recipient,
+        ];
+    }
+
+    private function get_weekly_report_stats(): array
+    {
+        global $wpdb;
+        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
+        $log_table = $this->table_name(self::LOG_TABLE);
+        $end = current_time('mysql', true);
+        $start = gmdate('Y-m-d H:i:s', time() - (7 * DAY_IN_SECONDS));
+
+        $subscribed = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$table} WHERE subscribed_at >= %s AND subscribed_at <= %s",
+            $start,
+            $end
+        ));
+        $unsubscribed = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$table} WHERE unsubscribed_at >= %s AND unsubscribed_at <= %s",
+            $start,
+            $end
+        ));
+        $send = $wpdb->get_row($wpdb->prepare(
+            "SELECT COALESCE(SUM(emails_sent), 0) AS emails_sent, COALESCE(SUM(errors_count), 0) AS errors_count
+             FROM {$log_table}
+             WHERE sent_at >= %s AND sent_at <= %s",
+            $start,
+            $end
+        ), ARRAY_A);
+
+        return [
+            'start' => $start,
+            'end' => $end,
+            'subscribed' => $subscribed,
+            'unsubscribed' => $unsubscribed,
+            'net' => $subscribed - $unsubscribed,
+            'emails_sent' => (int) ($send['emails_sent'] ?? 0),
+            'errors' => (int) ($send['errors_count'] ?? 0),
+            'active' => (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'active' AND confirmed = 1"),
+            'pending' => (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'pending'"),
+            'unsubscribed_total' => (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'unsubscribed'"),
+        ];
+    }
+
+    private function build_pending_report_html(array $rows, string $site_name, array $weekly): string
+    {
+        $pending_url = add_query_arg([
+            'page' => 'wppk-newsletter',
+            'tab' => 'subscribers',
+            'subscriber_view' => 'pending',
+        ], admin_url('admin.php'));
+        $stats_url = add_query_arg([
+            'page' => 'wppk-newsletter',
+            'tab' => 'stats',
+        ], admin_url('admin.php'));
+
+        $week_start = wp_date('d/m/Y', strtotime('-7 days'));
+        $week_end = wp_date('d/m/Y');
+        $cutoff = time() - (7 * DAY_IN_SECONDS);
+        $new_count = 0;
+        $net = (int) ($weekly['net'] ?? 0);
+        $net_label = $net > 0 ? '+' . $net : (string) $net;
+        $cell_style = 'padding:10px 12px;border:1px solid #e4e7eb;background:#f8fafc;';
+        $label_style = 'font-size:11px;color:#52606d;text-transform:uppercase;letter-spacing:.04em;';
+        $value_style = 'font-size:20px;font-weight:700;color:#0f172a;line-height:1.2;';
+
+        ob_start();
+        ?>
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:720px;margin:0 auto;color:#1f2933;">
+            <h2 style="margin:0 0 8px;font-size:20px;">Rapport hebdomadaire — semaine du <?php echo esc_html($week_start); ?> au <?php echo esc_html($week_end); ?></h2>
+            <p style="margin:0 0 16px;color:#52606d;font-size:14px;">Les chiffres de la semaine et les inscriptions en attente de confirmation.</p>
+
+            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 20px;border-collapse:separate;border-spacing:6px;">
+                <tr>
+                    <td width="50%" style="<?php echo esc_attr($cell_style); ?>border-radius:8px;">
+                        <div style="<?php echo esc_attr($label_style); ?>">Inscrits (7 j)</div>
+                        <div style="<?php echo esc_attr($value_style); ?>">+<?php echo (int) ($weekly['subscribed'] ?? 0); ?></div>
+                    </td>
+                    <td width="50%" style="<?php echo esc_attr($cell_style); ?>border-radius:8px;">
+                        <div style="<?php echo esc_attr($label_style); ?>">Désinscrits (7 j)</div>
+                        <div style="<?php echo esc_attr($value_style); ?>">−<?php echo (int) ($weekly['unsubscribed'] ?? 0); ?></div>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="<?php echo esc_attr($cell_style); ?>border-radius:8px;">
+                        <div style="<?php echo esc_attr($label_style); ?>">Solde net (7 j)</div>
+                        <div style="<?php echo esc_attr($value_style); ?>"><?php echo esc_html($net_label); ?></div>
+                    </td>
+                    <td style="<?php echo esc_attr($cell_style); ?>border-radius:8px;">
+                        <div style="<?php echo esc_attr($label_style); ?>">Actifs</div>
+                        <div style="<?php echo esc_attr($value_style); ?>"><?php echo (int) ($weekly['active'] ?? 0); ?></div>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="<?php echo esc_attr($cell_style); ?>border-radius:8px;">
+                        <div style="<?php echo esc_attr($label_style); ?>">Pending</div>
+                        <div style="<?php echo esc_attr($value_style); ?>"><?php echo (int) ($weekly['pending'] ?? 0); ?></div>
+                    </td>
+                    <td style="<?php echo esc_attr($cell_style); ?>border-radius:8px;">
+                        <div style="<?php echo esc_attr($label_style); ?>">Emails envoyés (7 j)</div>
+                        <div style="<?php echo esc_attr($value_style); ?>"><?php echo (int) ($weekly['emails_sent'] ?? 0); ?></div>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="<?php echo esc_attr($cell_style); ?>border-radius:8px;">
+                        <div style="<?php echo esc_attr($label_style); ?>">Erreurs (7 j)</div>
+                        <div style="<?php echo esc_attr($value_style); ?>"><?php echo (int) ($weekly['errors'] ?? 0); ?></div>
+                    </td>
+                    <td style="<?php echo esc_attr($cell_style); ?>border-radius:8px;">
+                        <div style="<?php echo esc_attr($label_style); ?>">Désinscrits (total)</div>
+                        <div style="<?php echo esc_attr($value_style); ?>"><?php echo (int) ($weekly['unsubscribed_total'] ?? 0); ?></div>
+                    </td>
+                </tr>
+            </table>
+
+            <p style="margin:0 0 18px;font-size:12px;color:#9aa5b1;">Les désinscriptions incluent les hard bounces, les plaintes SES et les nettoyages manuels.</p>
+
+            <h3 style="margin:0 0 8px;font-size:16px;">Inscriptions en attente (<?php echo count($rows); ?>)</h3>
+            <p style="margin:0 0 12px;color:#52606d;font-size:14px;">Ces adresses n’ont pas confirmé et ne reçoivent pas le digest.</p>
+            <?php if (!$rows) : ?>
+                <p style="padding:12px 16px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:14px;">Aucun pending pour le moment.</p>
+            <?php else : ?>
+                <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                    <thead>
+                        <tr style="text-align:left;color:#52606d;border-bottom:1px solid #e4e7eb;">
+                            <th style="padding:8px 6px;">Email</th>
+                            <th style="padding:8px 6px;">Inscription</th>
+                            <th style="padding:8px 6px;">Source</th>
+                            <th style="padding:8px 6px;">Âge</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($rows as $row) :
+                            $ts = strtotime((string) $row['created_at'] . ' UTC');
+                            if ($ts >= $cutoff) {
+                                $new_count++;
+                            }
+                            $date = $ts ? wp_date('d/m/Y H:i', $ts) : (string) $row['created_at'];
+                            $age = $ts ? human_time_diff($ts, time()) : '—';
+                            ?>
+                            <tr style="border-bottom:1px solid #f0f2f5;">
+                                <td style="padding:8px 6px;font-weight:600;"><?php echo esc_html((string) $row['email']); ?></td>
+                                <td style="padding:8px 6px;color:#52606d;"><?php echo esc_html($date); ?></td>
+                                <td style="padding:8px 6px;color:#52606d;"><?php echo esc_html((string) (($row['source'] ?: '—') . ' / ' . ($row['signup_process'] ?: '—'))); ?></td>
+                                <td style="padding:8px 6px;color:#52606d;"><?php echo esc_html($age); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <p style="margin:16px 0 0;font-size:13px;color:#52606d;"><?php echo (int) $new_count; ?> nouvelle(s) inscription(s) cette semaine.</p>
+            <?php endif; ?>
+
+            <p style="margin:20px 0 0;">
+                <a href="<?php echo esc_url($stats_url); ?>" style="display:inline-block;padding:10px 16px;background:#2f80ed;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;">Ouvrir les statistiques</a>
+                <a href="<?php echo esc_url($pending_url); ?>" style="display:inline-block;margin-left:8px;padding:10px 16px;background:#eef2f7;color:#1f2933;text-decoration:none;border-radius:6px;font-size:14px;">Ouvrir la liste des pending</a>
+            </p>
+            <p style="margin:24px 0 0;font-size:12px;color:#9aa5b1;">Rapport automatique de <?php echo esc_html($site_name); ?>.</p>
+        </div>
+        <?php
+        return (string) ob_get_clean();
     }
 
     public function configure_phpmailer($phpmailer): void
@@ -2184,7 +2451,8 @@ final class WPPK_Newsletter
                     'finished_at' => current_time('mysql', true),
                 ]));
                 update_option('wppk_newsletter_last_sent_date', $today, false);
-                $this->log_send((int) ($result['sent_total'] ?? 0), (int) ($result['posts_count'] ?? 0));
+                $batch_errors = max(0, (int) ($result['processed_total'] ?? 0) - (int) ($result['sent_total'] ?? 0));
+                $this->log_send((int) ($result['sent_total'] ?? 0), (int) ($result['posts_count'] ?? 0), $batch_errors);
                 $this->log_event('cron', 'ok', sprintf('Envoi terminé : %d/%d (ok=%d)', (int) ($result['processed_total'] ?? 0), (int) ($result['total'] ?? 0), (int) ($result['sent_total'] ?? 0)));
             } else {
                 $this->log_event('cron', 'ok', sprintf('Batch %s: %d/%d (ok=%d)', strtoupper($audience), (int) ($result['processed_total'] ?? 0), (int) ($result['total'] ?? 0), (int) ($result['sent_total'] ?? 0)));
@@ -2402,6 +2670,62 @@ final class WPPK_Newsletter
                                         <div class="wppk-field wppk-field--span-3"><label for="aws_ses_region">AWS SES region</label><input name="<?php echo esc_attr(self::OPTION_KEY); ?>[aws_ses_region]" id="aws_ses_region" type="text" value="<?php echo esc_attr($settings['aws_ses_region']); ?>" placeholder="eu-north-1"></div>
                                         <div class="wppk-field"><label for="aws_ses_access_key_id">AWS Access Key ID</label><input name="<?php echo esc_attr(self::OPTION_KEY); ?>[aws_ses_access_key_id]" id="aws_ses_access_key_id" type="text" value="<?php echo esc_attr($settings['aws_ses_access_key_id']); ?>" placeholder="AKIA..."></div>
                                         <div class="wppk-field"><label for="aws_ses_secret_access_key">AWS Secret Access Key</label><input type="password" name="<?php echo esc_attr(self::OPTION_KEY); ?>[aws_ses_secret_access_key]" id="aws_ses_secret_access_key" value="" autocomplete="new-password" placeholder="<?php echo !empty($settings['aws_ses_secret_access_key']) ? '••••••••••••••••' : 'Laisser vide pour conserver la secret key actuelle'; ?>"><p class="description">Crée un user IAM lecture seule SES pour ces stats.</p></div>
+                                    </div>
+                                    <div class="wppk-settings-section__footer">
+                                        <?php submit_button(__('Enregistrer', 'wppknewsletter'), 'primary', 'submit', false); ?>
+                                    </div>
+                                </section>
+
+                                <section class="wppk-settings-section wppk-settings-section--ses-bounces">
+                                    <div class="wppk-settings-section__header">
+                                        <h3 class="wppk-settings-section__title">Bounces SES (SNS)</h3>
+                                    </div>
+                                    <div class="wppk-settings-grid">
+                                        <div class="wppk-field wppk-field--span-3">
+                                            <label class="wppk-field__checkbox">
+                                                <input type="checkbox" name="<?php echo esc_attr(self::OPTION_KEY); ?>[ses_bounce_enabled]" id="ses_bounce_enabled" value="1" <?php checked((int) ($settings['ses_bounce_enabled'] ?? 0), 1); ?>>
+                                                <span>Désinscrire automatiquement les hard bounces et les plaintes SES</span>
+                                            </label>
+                                            <p class="description">Les bounces permanents et les plaintes passent l’abonné en <code>unsubscribed</code>. Les bounces temporaires sont seulement journalisés.</p>
+                                        </div>
+                                        <div class="wppk-field wppk-field--span-3">
+                                            <label for="ses_webhook_url">URL de notification SNS</label>
+                                            <input type="text" id="ses_webhook_url" value="<?php echo esc_attr($this->get_ses_webhook_url()); ?>" readonly onclick="this.select();">
+                                            <p class="description">Colle cette URL dans l’abonnement HTTPS du topic SNS. Elle contient un secret : ne la partage pas.</p>
+                                            <p class="description">Dans AWS SES : Identités &gt; ton domaine &gt; Notifications, crée un topic SNS, abonne cette URL en HTTPS, puis active Bounce + Complaint.</p>
+                                        </div>
+                                        <div class="wppk-field wppk-field--span-3">
+                                            <label for="ses_topic_arn">Topic ARN (optionnel)</label>
+                                            <input name="<?php echo esc_attr(self::OPTION_KEY); ?>[ses_topic_arn]" id="ses_topic_arn" type="text" value="<?php echo esc_attr((string) ($settings['ses_topic_arn'] ?? '')); ?>" placeholder="arn:aws:sns:eu-north-1:123456789012:pk-newsletter-bounces">
+                                            <p class="description">Si renseigné, seules les notifications de ce topic sont acceptées.</p>
+                                        </div>
+                                    </div>
+                                    <div class="wppk-settings-section__footer">
+                                        <?php submit_button(__('Enregistrer', 'wppknewsletter'), 'primary', 'submit', false); ?>
+                                    </div>
+                                </section>
+
+                                <section class="wppk-settings-section wppk-settings-section--pending-report">
+                                    <div class="wppk-settings-section__header">
+                                        <h3 class="wppk-settings-section__title">Rapport hebdomadaire</h3>
+                                    </div>
+                                    <div class="wppk-settings-grid">
+                                        <div class="wppk-field wppk-field--span-3">
+                                            <label class="wppk-field__checkbox">
+                                                <input type="checkbox" name="<?php echo esc_attr(self::OPTION_KEY); ?>[pending_report_enabled]" id="pending_report_enabled" value="1" <?php checked((int) ($settings['pending_report_enabled'] ?? 1), 1); ?>>
+                                                <span>Recevoir le rapport hebdomadaire (stats + inscriptions en attente)</span>
+                                            </label>
+                                            <p class="description">Envoyé chaque lundi à 09:00 (heure du site). Il contient les inscrits/désinscrits de la semaine, les emails envoyés, les erreurs, et la liste des adresses qui n’ont pas confirmé.</p>
+                                        </div>
+                                        <div class="wppk-field">
+                                            <label for="pending_report_recipient">Destinataire</label>
+                                            <input type="email" name="<?php echo esc_attr(self::OPTION_KEY); ?>[pending_report_recipient]" id="pending_report_recipient" value="<?php echo esc_attr((string) ($settings['pending_report_recipient'] ?? get_option('admin_email'))); ?>">
+                                        </div>
+                                        <div class="wppk-field">
+                                            <label>Envoi manuel</label>
+                                            <a class="button button-secondary" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=wppk_send_pending_report'), 'wppk_send_pending_report')); ?>">Envoyer maintenant</a>
+                                            <p class="description">Envoie le rapport immédiatement, même s’il n’y a aucun pending.</p>
+                                        </div>
                                     </div>
                                     <div class="wppk-settings-section__footer">
                                         <?php submit_button(__('Enregistrer', 'wppknewsletter'), 'primary', 'submit', false); ?>
@@ -2804,7 +3128,7 @@ final class WPPK_Newsletter
             $growth['subscribed_series'],
             $growth['unsubscribed_series'],
             'Actifs',
-            'Désinscrits',
+            'Désinscriptions',
             'wppk-chart-card--mini'
         );
         ?>
@@ -3270,7 +3594,7 @@ final class WPPK_Newsletter
             $growth['subscribed_series'] ?? [],
             $growth['unsubscribed_series'] ?? [],
             'Actifs',
-            'Désinscrits',
+            'Désinscriptions',
             'wppk-chart-card--mini'
         );
         echo $this->render_line_chart_card(
@@ -3282,6 +3606,12 @@ final class WPPK_Newsletter
                 is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $sending_summary['sending_series'],
                 (string) $this->get_active_audience()
             )
+        );
+        echo $this->render_line_chart_card(
+            'Erreurs',
+            'Emails non envoyés par jour',
+            $sending_summary['errors_series'] ?? [],
+            'wppk-chart-card--mini'
         );
         echo '</div>';
         echo '</section>';
@@ -4339,6 +4669,13 @@ final class WPPK_Newsletter
         echo '<p class="description" style="margin:8px 0 12px;"><a href="https://eu-north-1.console.aws.amazon.com/ses/home?region=eu-north-1#/account" target="_blank" rel="noreferrer">Ouvrir le dashboard AWS SES</a></p>';
 
         echo '<div class="wppk-stat-grid wppk-stat-grid--compact" style="margin-top:8px;">';
+        echo $this->render_stat_card(__('Abonnés actifs', 'wppknewsletter'), number_format_i18n((int) $summary['current_active']), __('Confirmés', 'wppknewsletter'));
+        echo $this->render_stat_card(__('Pending', 'wppknewsletter'), number_format_i18n((int) $summary['current_pending']), __('En attente de confirmation', 'wppknewsletter'));
+        echo $this->render_stat_card(__('Désinscrits', 'wppknewsletter'), number_format_i18n((int) $summary['current_unsubscribed']), __('Total dans la base', 'wppknewsletter'));
+        echo $this->render_stat_card(__('Erreurs', 'wppknewsletter'), number_format_i18n((int) $summary['errors_total']), __('Emails non envoyés sur la période', 'wppknewsletter'));
+        echo '</div>';
+
+        echo '<div class="wppk-stat-grid wppk-stat-grid--compact" style="margin-top:8px;">';
         if (is_array($aws_ses_stats)) {
             $sent_last_24h = (int) ($aws_sent_last_24h ?? $aws_ses_stats['sent_last_24_hours']);
             $quota_remaining = max(0, (int) round($aws_ses_stats['max_24_hour_send'] - $sent_last_24h));
@@ -4358,6 +4695,21 @@ final class WPPK_Newsletter
         }
         echo '</div>';
 
+        echo '<h3 class="wppk-stats-section-title">Abonnés</h3>';
+        echo $this->render_line_chart_card(
+            'Abonnés actifs',
+            'Volume cumulé sur la période',
+            $summary['follower_series']
+        );
+        echo $this->render_dual_line_chart_card(
+            'Inscriptions / désinscriptions',
+            'Par période',
+            $summary['subscribed_series'],
+            $summary['unsubscribed_series'],
+            'Inscriptions',
+            'Désinscriptions'
+        );
+
         echo '<h3 class="wppk-stats-section-title">Envois</h3>';
         if (!is_array($aws_ses_stats)) {
             echo '<p class="description" style="margin:8px 0 0;">' . esc_html__('Stats AWS SES indisponibles. Renseigne la region, l’Access Key ID et la Secret Access Key dans Reglages > SMTP.', 'wppknewsletter') . '</p>';
@@ -4372,6 +4724,13 @@ final class WPPK_Newsletter
                 is_array($aws_sending_data) ? $aws_sending_data['sending_series'] : $summary['sending_series'],
                 (string) $this->get_active_audience()
             )
+        );
+
+        echo '<h3 class="wppk-stats-section-title">Erreurs</h3>';
+        echo $this->render_line_chart_card(
+            'Erreurs d’envoi',
+            'Emails non envoyés par période',
+            $summary['errors_series']
         );
 
         // Prefer internal logs for "posts_count" (SES stats can't infer it).
@@ -4468,7 +4827,7 @@ final class WPPK_Newsletter
             }
         }
 
-        $this->log_send($sent, count($posts));
+        $this->log_send($sent, count($posts), max(0, count($subscribers) - $sent));
 
         if ($sent === 0) {
             return ['sent' => 0, 'reason' => 'Aucun email envoye. Verifie wp_mail(), le spam ou la config serveur.'];
@@ -4738,7 +5097,7 @@ final class WPPK_Newsletter
         ];
     }
 
-    private function log_send(int $emails_sent, int $posts_count): void
+    private function log_send(int $emails_sent, int $posts_count, int $errors_count = 0): void
     {
         global $wpdb;
         $table = $this->table_name(self::LOG_TABLE);
@@ -4746,6 +5105,7 @@ final class WPPK_Newsletter
             'sent_at' => current_time('mysql', true),
             'emails_sent' => $emails_sent,
             'posts_count' => $posts_count,
+            'errors_count' => max(0, $errors_count),
         ]);
         if (!$ok) {
             $this->log_event('system', 'error', sprintf('Échec insertion logs (%s): %s', $table, (string) $wpdb->last_error));
@@ -4790,16 +5150,30 @@ final class WPPK_Newsletter
         $subscribed_series = [];
         $unsubscribed_series = [];
         $sending_series = [];
+        $errors_series = [];
         $emails_total = 0;
         $campaigns_total = 0;
         $posts_total = 0;
+        $errors_total = 0;
 
         foreach ($periods as $period) {
             $followers_count = (int) $wpdb->get_var(
                 $wpdb->prepare(
-                    "SELECT COUNT(*) FROM {$subscriber_table} WHERE subscribed_at <= %s AND (unsubscribed_at IS NULL OR unsubscribed_at > %s)",
+                    "SELECT COUNT(*) FROM {$subscriber_table}
+                     WHERE confirmed = 1
+                       AND subscribed_at <= %s
+                       AND (
+                         CASE
+                           WHEN resubscribed_at IS NOT NULL AND (unsubscribed_at IS NULL OR resubscribed_at > unsubscribed_at)
+                             THEN resubscribed_at <= %s
+                           WHEN unsubscribed_at IS NOT NULL
+                             THEN unsubscribed_at > %s
+                           ELSE 1
+                         END
+                       )",
+                    $period['end'],
+                    $period['end'],
                     $period['end']
-                    ,$period['end']
                 )
             );
             $subscribed_count = (int) $wpdb->get_var(
@@ -4831,7 +5205,7 @@ final class WPPK_Newsletter
 
             $send_row = $wpdb->get_row(
                 $wpdb->prepare(
-                    "SELECT COALESCE(SUM(emails_sent), 0) AS emails_sent, COUNT(*) AS campaigns, COALESCE(SUM(posts_count), 0) AS posts_count
+                    "SELECT COALESCE(SUM(emails_sent), 0) AS emails_sent, COALESCE(SUM(errors_count), 0) AS errors_count, COUNT(*) AS campaigns, COALESCE(SUM(posts_count), 0) AS posts_count
                      FROM {$log_table}
                      WHERE sent_at >= %s AND sent_at <= %s",
                     $period['start'],
@@ -4843,15 +5217,21 @@ final class WPPK_Newsletter
             $emails = (int) ($send_row['emails_sent'] ?? 0);
             $campaigns = (int) ($send_row['campaigns'] ?? 0);
             $posts = (int) ($send_row['posts_count'] ?? 0);
+            $errors = (int) ($send_row['errors_count'] ?? 0);
 
             $sending_series[] = [
                 'label' => $period['label'],
                 'value' => $emails,
             ];
+            $errors_series[] = [
+                'label' => $period['label'],
+                'value' => $errors,
+            ];
 
             $emails_total += $emails;
             $campaigns_total += $campaigns;
             $posts_total += $posts;
+            $errors_total += $errors;
         }
 
         $recent_logs = $wpdb->get_results(
@@ -4864,10 +5244,14 @@ final class WPPK_Newsletter
             'subscribed_series' => $subscribed_series,
             'unsubscribed_series' => $unsubscribed_series,
             'sending_series' => $sending_series,
+            'errors_series' => $errors_series,
             'emails_total' => $emails_total,
             'campaigns_total' => $campaigns_total,
             'posts_total' => $posts_total,
+            'errors_total' => $errors_total,
             'current_active' => (int) $wpdb->get_var("SELECT COUNT(*) FROM {$subscriber_table} WHERE status = 'active' AND confirmed = 1"),
+            'current_pending' => (int) $wpdb->get_var("SELECT COUNT(*) FROM {$subscriber_table} WHERE status = 'pending'"),
+            'current_unsubscribed' => (int) $wpdb->get_var("SELECT COUNT(*) FROM {$subscriber_table} WHERE status = 'unsubscribed'"),
             'recent_logs' => $recent_logs,
         ];
     }
@@ -5401,6 +5785,7 @@ final class WPPK_Newsletter
             sent_at DATETIME NOT NULL,
             emails_sent INT UNSIGNED NOT NULL DEFAULT 0,
             posts_count INT UNSIGNED NOT NULL DEFAULT 0,
+            errors_count INT UNSIGNED NOT NULL DEFAULT 0,
             PRIMARY KEY (id)
         ) {$charset};");
     }
@@ -5525,7 +5910,19 @@ final class WPPK_Newsletter
                 'label' => $period['label'],
                 'value' => (int) $wpdb->get_var(
                     $wpdb->prepare(
-                        "SELECT COUNT(*) FROM {$subscriber_table} WHERE subscribed_at <= %s AND (unsubscribed_at IS NULL OR unsubscribed_at > %s)",
+                        "SELECT COUNT(*) FROM {$subscriber_table}
+                         WHERE confirmed = 1
+                           AND subscribed_at <= %s
+                           AND (
+                             CASE
+                               WHEN resubscribed_at IS NOT NULL AND (unsubscribed_at IS NULL OR resubscribed_at > unsubscribed_at)
+                                 THEN resubscribed_at <= %s
+                               WHEN unsubscribed_at IS NOT NULL
+                                 THEN unsubscribed_at > %s
+                               ELSE 1
+                             END
+                           )",
+                        $period['end'],
                         $period['end'],
                         $period['end']
                     )
@@ -5715,6 +6112,27 @@ final class WPPK_Newsletter
         }
     }
 
+    private function ensure_pending_report_schedule(): void
+    {
+        $hook = self::PENDING_REPORT_HOOK;
+        if ($this->get_scheduled_hook_occurrences($hook) > 1) {
+            wp_clear_scheduled_hook($hook);
+        }
+
+        if (wp_next_scheduled($hook)) {
+            return;
+        }
+
+        $tz = wp_timezone();
+        $now = new DateTimeImmutable('now', $tz);
+        $next = $now->modify('next monday')->setTime(9, 0, 0);
+        if ($next <= $now) {
+            $next = $next->modify('+1 week');
+        }
+
+        wp_schedule_event($next->getTimestamp(), 'weekly', $hook);
+    }
+
     private function get_scheduled_hook_occurrences(string $hook): int
     {
         if (!function_exists('_get_cron_array')) {
@@ -5740,6 +6158,82 @@ final class WPPK_Newsletter
         }
 
         return $count;
+    }
+
+    public function is_ses_bounce_enabled(): bool
+    {
+        $settings = $this->get_settings();
+        return !empty($settings['ses_bounce_enabled']);
+    }
+
+    public function get_ses_topic_arn(): string
+    {
+        $settings = $this->get_settings();
+        return trim((string) ($settings['ses_topic_arn'] ?? ''));
+    }
+
+    public function get_ses_webhook_secret(): string
+    {
+        $settings = $this->get_settings();
+        $secret = (string) ($settings['ses_webhook_secret'] ?? '');
+        if ($secret === '') {
+            $secret = wp_generate_password(40, false, false);
+            $settings['ses_webhook_secret'] = $secret;
+            update_option(self::OPTION_KEY, $settings, false);
+        }
+        return $secret;
+    }
+
+    public function get_ses_webhook_url(): string
+    {
+        return add_query_arg(
+            ['token' => $this->get_ses_webhook_secret()],
+            rest_url('wppknewsletter/v1/ses-notification')
+        );
+    }
+
+    public function log_ses_event(string $status, string $message): void
+    {
+        $this->log_event('ses', $status, $message);
+    }
+
+    public function mark_email_unsubscribed(string $email, string $source = 'ses', string $detail = ''): array
+    {
+        global $wpdb;
+
+        $email = strtolower((string) sanitize_email($email));
+        if ($email === '' || !is_email($email)) {
+            return ['ok' => false, 'email' => $email, 'status' => 'invalid_email'];
+        }
+
+        $table = $this->table_name(self::SUBSCRIBERS_TABLE);
+        $row = $wpdb->get_row(
+            $wpdb->prepare("SELECT id, email, status FROM {$table} WHERE LOWER(email) = %s LIMIT 1", $email),
+            ARRAY_A
+        );
+
+        if (!$row) {
+            $this->log_event('ses', 'warn', sprintf('Bounce/plainte sans abonné correspondant : %s', $email));
+            return ['ok' => true, 'email' => $email, 'status' => 'not_found'];
+        }
+
+        if (($row['status'] ?? '') === 'unsubscribed') {
+            return ['ok' => true, 'email' => $email, 'status' => 'already_unsubscribed'];
+        }
+
+        $this->update_subscriber_status((int) $row['id'], 'unsubscribed');
+        $this->log_event(
+            'ses',
+            'ok',
+            sprintf(
+                'Désinscription automatique (%s) : %s%s',
+                $source,
+                $email,
+                $detail !== '' ? ' — ' . $detail : ''
+            )
+        );
+
+        return ['ok' => true, 'email' => $email, 'status' => 'unsubscribed'];
     }
 
     private function get_settings(): array
@@ -5779,6 +6273,11 @@ final class WPPK_Newsletter
             'aws_ses_region' => 'eu-north-1',
             'aws_ses_access_key_id' => '',
             'aws_ses_secret_access_key' => '',
+            'ses_bounce_enabled' => 0,
+            'ses_topic_arn' => '',
+            'ses_webhook_secret' => '',
+            'pending_report_enabled' => 1,
+            'pending_report_recipient' => get_option('admin_email'),
             'floating_button_enabled' => 0,
             'floating_button_label' => 'Newsletter',
             'floating_button_bg_color' => '#2f80ed',

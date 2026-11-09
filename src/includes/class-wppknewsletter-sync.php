@@ -10,6 +10,7 @@ final class WPPK_Newsletter_Sync
     private const MANIFEST_ROUTE = '/sync-plugin/manifest';
     private const SYNC_ROUTE = '/sync-plugin';
     private const DIAG_ROUTE = '/diag';
+    private const SES_ROUTE = '/ses-notification';
     private const DIGEST_CRON_HOOK = 'wppk_newsletter_digest_event';
 
     public static function boot(): void
@@ -56,6 +57,12 @@ final class WPPK_Newsletter_Sync
             'methods' => WP_REST_Server::READABLE,
             'callback' => [$this, 'handle_diag'],
             'permission_callback' => [$this, 'permission_manage_options'],
+        ]);
+
+        register_rest_route(self::REST_NAMESPACE, self::SES_ROUTE, [
+            'methods' => WP_REST_Server::CREATABLE,
+            'callback' => [$this, 'handle_ses_notification'],
+            'permission_callback' => '__return_true',
         ]);
     }
 
@@ -226,6 +233,119 @@ final class WPPK_Newsletter_Sync
             'activated' => $activated,
             'errors' => $errors,
         ], $status);
+    }
+
+    public function handle_ses_notification(WP_REST_Request $request): WP_REST_Response
+    {
+        $plugin = WPPK_Newsletter::instance();
+        if (!$plugin) {
+            return new WP_REST_Response(['ok' => false, 'error' => 'plugin_not_ready'], 500);
+        }
+
+        if (!$plugin->is_ses_bounce_enabled()) {
+            return new WP_REST_Response(['ok' => false, 'error' => 'disabled'], 403);
+        }
+
+        $token = (string) $request->get_param('token');
+        if (!hash_equals($plugin->get_ses_webhook_secret(), $token)) {
+            return new WP_REST_Response(['ok' => false, 'error' => 'invalid_token'], 403);
+        }
+
+        $payload = json_decode((string) $request->get_body(), true);
+        if (!is_array($payload)) {
+            return new WP_REST_Response(['ok' => false, 'error' => 'invalid_json'], 400);
+        }
+
+        $type = (string) ($payload['Type'] ?? '');
+
+        if ($type === 'SubscriptionConfirmation' || $type === 'UnsubscribeConfirmation') {
+            $subscribe_url = (string) ($payload['SubscribeURL'] ?? '');
+            if (!$this->is_trusted_sns_url($subscribe_url)) {
+                return new WP_REST_Response(['ok' => false, 'error' => 'untrusted_subscribe_url'], 403);
+            }
+
+            if ($type === 'SubscriptionConfirmation') {
+                $response = wp_remote_get($subscribe_url, ['timeout' => 15]);
+                if (is_wp_error($response)) {
+                    $plugin->log_ses_event('error', 'Confirmation SNS échouée : ' . $response->get_error_message());
+                    return new WP_REST_Response(['ok' => false, 'error' => 'subscribe_failed'], 502);
+                }
+                $code = (int) wp_remote_retrieve_response_code($response);
+                if ($code < 200 || $code >= 300) {
+                    $plugin->log_ses_event('error', sprintf('Confirmation SNS HTTP %d', $code));
+                    return new WP_REST_Response(['ok' => false, 'error' => 'subscribe_failed'], 502);
+                }
+                $plugin->log_ses_event('ok', 'Abonnement SNS confirmé');
+            }
+
+            return new WP_REST_Response(['ok' => true, 'type' => $type], 200);
+        }
+
+        if ($type !== 'Notification') {
+            return new WP_REST_Response(['ok' => true, 'ignored' => $type], 200);
+        }
+
+        $topic_arn = $plugin->get_ses_topic_arn();
+        if ($topic_arn !== '' && !hash_equals($topic_arn, (string) ($payload['TopicArn'] ?? ''))) {
+            return new WP_REST_Response(['ok' => false, 'error' => 'unexpected_topic'], 403);
+        }
+
+        $message = json_decode((string) ($payload['Message'] ?? ''), true);
+        if (!is_array($message)) {
+            return new WP_REST_Response(['ok' => false, 'error' => 'invalid_message'], 400);
+        }
+
+        $notification_type = (string) ($message['notificationType'] ?? '');
+        $results = [];
+
+        if ($notification_type === 'Bounce') {
+            $bounce = is_array($message['bounce'] ?? null) ? $message['bounce'] : [];
+            $bounce_type = (string) ($bounce['bounceType'] ?? '');
+            $recipients = is_array($bounce['bouncedRecipients'] ?? null) ? $bounce['bouncedRecipients'] : [];
+
+            if ($bounce_type === 'Permanent') {
+                foreach ($recipients as $recipient) {
+                    $email = (string) ($recipient['emailAddress'] ?? '');
+                    $detail = (string) ($recipient['diagnosticCode'] ?? '');
+                    $results[] = $plugin->mark_email_unsubscribed($email, 'ses_bounce', $detail);
+                }
+            } else {
+                $emails = [];
+                foreach ($recipients as $recipient) {
+                    $email = (string) ($recipient['emailAddress'] ?? '');
+                    if ($email !== '') {
+                        $emails[] = $email;
+                    }
+                }
+                $plugin->log_ses_event('warn', sprintf('Bounce transitoire ignoré (%s) : %s', $bounce_type, implode(', ', $emails)));
+            }
+        } elseif ($notification_type === 'Complaint') {
+            $complaint = is_array($message['complaint'] ?? null) ? $message['complaint'] : [];
+            $recipients = is_array($complaint['complainedRecipients'] ?? null) ? $complaint['complainedRecipients'] : [];
+            foreach ($recipients as $recipient) {
+                $email = (string) ($recipient['emailAddress'] ?? '');
+                $results[] = $plugin->mark_email_unsubscribed($email, 'ses_complaint', (string) ($complaint['complaintFeedbackType'] ?? ''));
+            }
+        } else {
+            $plugin->log_ses_event('info', 'Notification SES ignorée : ' . $notification_type);
+        }
+
+        return new WP_REST_Response([
+            'ok' => true,
+            'type' => $notification_type,
+            'results' => $results,
+        ], 200);
+    }
+
+    private function is_trusted_sns_url(string $url): bool
+    {
+        $parts = wp_parse_url($url);
+        if (!is_array($parts) || ($parts['scheme'] ?? '') !== 'https') {
+            return false;
+        }
+
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        return (bool) preg_match('/^sns\.[a-z0-9-]+\.amazonaws\.com$/', $host);
     }
 
     public function handle_diag(WP_REST_Request $request): WP_REST_Response

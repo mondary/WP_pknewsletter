@@ -2,6 +2,8 @@
 
 [🇬🇧 EN](README_en.md) · [🇫🇷 FR](README.md)
 
+> Version **2026.11.1** · [Support on Ko-fi](https://ko-fi.com/pouark)
+
 ✨ WordPress plugin to manage a daily editorial newsletter with subscriber management, HTML digest rendering, subscription history, and built-in SMTP delivery.
 
 ## ✅ Features
@@ -114,6 +116,11 @@ Amazon SES example:
 - security: `TLS`
 
 ## 🧾 Changelog
+- `2026.11.1`: SES/SNS webhook, weekly stats report, subscriber/send/error charts, CalVer versioning
+- `2.46`: weekly report now includes the week's stats (subscribers, unsubscribes, net, active, pending, emails sent, errors) alongside the pending list
+- `2.45`: subscriber growth charts (active, subscriptions, unsubscriptions), send volume, and errors in Statistics + errors card on the dashboard
+- `2.44`: weekly pending report (Monday 09:00) with configurable recipient and manual send button
+- `2.43`: SES/SNS webhook: automatic unsubscribe on permanent bounces and spam complaints, with signed webhook URL and optional Topic ARN
 - `2.35`: auto-recovers stuck “sending” campaigns + flushes progress periodically + per-recipient error handling (avoids being stuck at 0/…)
 - `2.34`: optional diagnostics panel `?wppk_diag=1` (PROD/DEV campaign payloads + latest send log) + logs an error if DB insert fails
 - `2.33`: manual digest send now marks the daily campaign as `sent` and writes logs like the cron sender (prevents the dashboard from staying stuck on “In progress”) + dashboard shows PROD/DEV

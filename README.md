@@ -2,6 +2,8 @@
 
 [🇫🇷 FR](README.md) · [🇬🇧 EN](README_en.md)
 
+> Version **2026.11.1** · [Soutenir sur Ko-fi](https://ko-fi.com/pouark)
+
 ✨ Plugin WordPress pour gérer une newsletter éditoriale quotidienne avec base abonnés, digest HTML, historique d’inscription et envoi SMTP intégré.
 
 ## ✅ Fonctionnalités
@@ -114,6 +116,11 @@ Exemple Amazon SES :
 - sécurité : `TLS`
 
 ## 🧾 Changelog
+- `2026.11.1` : webhook SES/SNS, rapport hebdo avec stats, courbes abonnés/envois/erreurs, versioning CalVer
+- `2.46` : le rapport hebdomadaire inclut désormais les stats de la semaine (inscrits, désinscrits, solde, actifs, pending, emails envoyés, erreurs) en plus de la liste des pending
+- `2.45` : courbes abonnés (actifs, inscriptions, désinscriptions), envois et erreurs dans Statistiques + carte Erreurs sur le dashboard
+- `2.44` : rapport pending hebdomadaire (lundi 09:00) avec destinataire configurable et bouton d’envoi manuel
+- `2.43` : webhook SES/SNS : désinscription automatique des hard bounces et des plaintes, avec URL signée et Topic ARN optionnel
 - `2.35` : récupération automatique des campagnes bloquées + flush de progression + capture d’erreurs par destinataire (évite les “sending” à 0/…)
 - `2.34` : panneau diagnostic optionnel `?wppk_diag=1` (payload campagnes PROD/DEV + dernier log d’envoi) + log d’erreur si l’insertion DB échoue
 - `2.33` : envoi manuel digest : la campagne du jour est désormais marquée `sent` et loggée (évite le statut bloqué “En cours” sur le dashboard) + le dashboard affiche PROD/DEV
